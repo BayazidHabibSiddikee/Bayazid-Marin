@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bayazid HS-02 — Command Interface</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&family=Cinzel:wght@400;600&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --bg2: #0f0f1a;
+            --bg3: #14141f;
+            --panel: #12121e;
+            --border: #1e1e35;
+            --purple: #8b5cf6;
+            --violet: #a78bfa;
+            --violet-dim: #6d4fcc;
+            --text: #d1d5db;
+            --text-dim: #6b7280;
+            --text-muted: #3f3f5a;
+            --danger: #dc2626;
+            --gold: #fbbf24;
+            --success: #10b981;
+            --scan-line: rgba(139, 92, 246, 0.04);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Scan lines overlay */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background: repeating-linear-gradient(0deg,
+                    transparent,
+                    transparent 2px,
+                    var(--scan-line) 2px,
+                    var(--scan-line) 4px);
+            pointer-events: none;
+            z-index: 1000;
+        }
+
+        /* Noise grain */
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+            pointer-events: none;
+            z-index: 999;
+            opacity: .5;
+        }
+
+        /* ── TOP BAR ─────────────────────────────────────────────────── */
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 20px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--border);
+            position: relative;
+            z-index: 10;
+            flex-shrink: 0;
+        }
+
+        .topbar::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--purple), transparent);
+        }
+
+        .logo {
+            font-family: 'Cinzel', serif;
+            font-size: 1rem;
+            font-weight: 600;
+            letter-spacing: .12em;
+            color: var(--violet);
+            text-shadow: 0 0 20px rgba(167, 139, 250, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo .badge {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .65rem;
+            background: linear-gradient(135deg, var(--purple), var(--violet));
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 2px;
+            letter-spacing: .08em;
+        }
+
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: .4;
+            }
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 6px;
+        }
+
+        .nav-links a {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .7rem;
+            color: var(--text-dim);
+            text-decoration: none;
+            padding: 4px 10px;
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            letter-spacing: .05em;
+            transition: all .2s;
+        }
+
+        .nav-links a:hover,
+        .nav-links a.active {
+            color: var(--violet);
+            border-color: var(--purple);
+            background: rgba(139, 92, 246, 0.08);
+        }
+
+        /* ── TIMER STRIP ─────────────────────────────────────────────── */
+        .timer-strip {
+            background: var(--bg2);
+            border-bottom: 1px solid var(--border);
+            padding: 6px 20px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-shrink: 0;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .72rem;
+        }
+
+        .timer-strip .label {
+            color: var(--text-muted);
+            letter-spacing: .08em;
+        }
+
+        .timer-strip .val {
+            color: var(--violet);
+            font-weight: 600;
+        }
+
+        .timer-strip .sep {
+            color: var(--text-muted);
+        }
+
+        #session-task {
+            color: var(--gold);
+        }
+
+        .timer-btn {
+            margin-left: auto;
+            padding: 3px 12px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .65rem;
+            border-radius: 3px;
+            cursor: pointer;
+            border: 1px solid;
+            transition: all .2s;
+            letter-spacing: .06em;
+        }
+
+        .timer-btn.start {
+            color: var(--success);
+            border-color: var(--success);
+            background: rgba(16, 185, 129, 0.06);
+        }
+
+        .timer-btn.start:hover {
+            background: rgba(16, 185, 129, 0.15);
+        }
+
+        .timer-btn.stop {
+            color: var(--danger);
+            border-color: var(--danger);
+            background: rgba(220, 38, 38, 0.06);
+        }
+
+        .timer-btn.stop:hover {
+            background: rgba(220, 38, 38, 0.15);
+        }
+
+        /* ── MAIN AREA ───────────────────────────────────────────────── */
+        .main-area {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* ── SIDEBAR ─────────────────────────────────────────────────── */
+        .sidebar {
+            width: 220px;
+            background: var(--panel);
+            border-right: 1px solid var(--border);
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            padding: 14px 0;
+            gap: 4px;
+        }
+
+        .sidebar-section {
+            padding: 4px 14px 8px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .6rem;
+            letter-spacing: .15em;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .sidebar-btn {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-family: 'Rajdhani', sans-serif;
+            font-size: .9rem;
+            font-weight: 500;
+            color: var(--text-dim);
+            border: none;
+            background: none;
+            text-align: left;
+            transition: all .2s;
+            position: relative;
+        }
+
+        .sidebar-btn:hover {
+            color: var(--text);
+            background: rgba(139, 92, 246, 0.06);
+        }
+
+        .sidebar-btn.active {
+            color: var(--violet);
+            background: rgba(139, 92, 246, 0.1);
+        }
+
+        .sidebar-btn.active::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--purple);
+            box-shadow: 0 0 10px var(--purple);
+        }
+
+        .sidebar-btn .icon {
+            font-size: 1rem;
+            width: 20px;
+            text-align: center;
+        }
+
+        /* ── CHAT AREA ───────────────────────────────────────────────── */
+        .chat-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        #messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            scroll-behavior: smooth;
+        }
+
+        #messages::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        #messages::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        #messages::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 2px;
+        }
+
+        .msg {
+            display: flex;
+            gap: 12px;
+            animation: fadeIn .3s ease;
+            max-width: 860px;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .msg.user {
+            flex-direction: row-reverse;
+            align-self: flex-end;
+        }
+
+        .avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 4px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            font-family: 'Cinzel', serif;
+        }
+
+        .avatar.ai {
+            background: linear-gradient(135deg, var(--purple), #4c1d95);
+            color: #fff;
+            border: 1px solid rgba(139, 92, 246, 0.4);
+            box-shadow: 0 0 12px rgba(139, 92, 246, 0.3);
+        }
+
+        .avatar.user-av {
+            background: linear-gradient(135deg, #1e1e35, var(--bg3));
+            color: var(--text-dim);
+            border: 1px solid var(--border);
+        }
+
+        .bubble {
+            max-width: 640px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: .95rem;
+            line-height: 1.65;
+            font-weight: 500;
+        }
+
+        .msg.ai .bubble {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-top-left-radius: 2px;
+        }
+
+        .msg.user .bubble {
+            background: rgba(139, 92, 246, 0.12);
+            border: 1px solid rgba(139, 92, 246, 0.25);
+            color: var(--text);
+            border-top-right-radius: 2px;
+        }
+
+        /* Code in messages */
+        .bubble pre {
+            background: #0d0d18;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 12px;
+            overflow-x: auto;
+            margin: 10px 0;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .82rem;
+            color: #c4b5fd;
+            line-height: 1.5;
+        }
+
+        .bubble code {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .85em;
+            color: #a78bfa;
+            background: rgba(139, 92, 246, 0.12);
+            padding: 1px 5px;
+            border-radius: 3px;
+        }
+
+        .bubble pre code {
+            background: none;
+            padding: 0;
+            color: #c4b5fd;
+        }
+
+        /* Typing indicator */
+        .typing-dots {
+            display: flex;
+            gap: 5px;
+            padding: 4px 0;
+            align-items: center;
+        }
+
+        .typing-dots span {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--purple);
+            animation: dot-bounce .9s infinite;
+        }
+
+        .typing-dots span:nth-child(2) {
+            animation-delay: .15s;
+        }
+
+        .typing-dots span:nth-child(3) {
+            animation-delay: .3s;
+        }
+
+        @keyframes dot-bounce {
+
+            0%,
+            60%,
+            100% {
+                transform: translateY(0);
+            }
+
+            30% {
+                transform: translateY(-6px);
+            }
+        }
+
+        /* ── MODE TABS ───────────────────────────────────────────────── */
+        .mode-bar {
+            display: flex;
+            gap: 4px;
+            padding: 10px 20px 0;
+            background: var(--bg);
+            border-top: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .mode-tab {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .68rem;
+            padding: 4px 12px;
+            border-radius: 3px 3px 0 0;
+            border: 1px solid var(--border);
+            border-bottom: none;
+            background: var(--bg2);
+            color: var(--text-dim);
+            cursor: pointer;
+            letter-spacing: .06em;
+            transition: all .2s;
+        }
+
+        .mode-tab:hover {
+            color: var(--text);
+        }
+
+        .mode-tab.active {
+            color: var(--violet);
+            background: var(--panel);
+            border-color: var(--purple);
+        }
+
+        /* ── INPUT AREA ──────────────────────────────────────────────── */
+        .input-area {
+            background: var(--panel);
+            border-top: 1px solid var(--border);
+            padding: 14px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            flex-shrink: 0;
+            position: relative;
+        }
+
+        .input-area::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--purple), transparent);
+        }
+
+        .input-row {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+
+        #msg-input {
+            flex: 1;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 1rem;
+            font-weight: 500;
+            padding: 10px 14px;
+            resize: none;
+            min-height: 44px;
+            max-height: 140px;
+            line-height: 1.5;
+            transition: border-color .2s;
+            outline: none;
+        }
+
+        #msg-input:focus {
+            border-color: var(--purple);
+            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.12);
+        }
+
+        #msg-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .send-btn {
+            background: linear-gradient(135deg, var(--purple), var(--violet-dim));
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-family: 'Rajdhani', sans-serif;
+            font-size: .95rem;
+            font-weight: 600;
+            letter-spacing: .06em;
+            transition: all .2s;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .send-btn:hover {
+            background: linear-gradient(135deg, var(--violet), var(--purple));
+            box-shadow: 0 0 16px rgba(139, 92, 246, 0.35);
+        }
+
+        .send-btn:disabled {
+            opacity: .5;
+            cursor: not-allowed;
+        }
+
+        .tools-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tool-btn {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .65rem;
+            padding: 4px 10px;
+            border-radius: 3px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-dim);
+            cursor: pointer;
+            letter-spacing: .06em;
+            transition: all .2s;
+        }
+
+        .tool-btn:hover {
+            color: var(--violet);
+            border-color: var(--purple);
+        }
+
+        .tool-btn.active {
+            color: var(--gold);
+            border-color: var(--gold);
+            background: rgba(251, 191, 36, 0.06);
+        }
+
+        #attach-label {
+            cursor: pointer;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .65rem;
+            padding: 4px 10px;
+            border-radius: 3px;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            letter-spacing: .06em;
+            transition: all .2s;
+        }
+
+        #attach-label:hover {
+            color: var(--violet);
+            border-color: var(--purple);
+        }
+
+        #attach-input {
+            display: none;
+        }
+
+        #attach-preview {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .7rem;
+            color: var(--gold);
+        }
+
+        .hint-text {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: .62rem;
+            color: var(--text-muted);
+            margin-left: auto;
+        }
+
+        /* ── QUIZ PANEL ──────────────────────────────────────────────── */
+        .quiz-panel {
+            display: none;
+            padding: 14px;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin: 0 20px;
+            flex-shrink: 0;
+        }
+
+        .quiz-panel.visible {
+            display: block;
+        }
+
+        .quiz-panel h3 {
+            font-family: 'Cinzel', serif;
+            font-size: .9rem;
+            color: var(--violet);
+            margin-bottom: 12px;
+            letter-spacing: .08em;
+        }
+
+        .quiz-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .quiz-controls input,
+        .quiz-controls select {
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            font-size: .9rem;
+            padding: 6px 10px;
+            border-radius: 4px;
+            outline: none;
+        }
+
+        .quiz-controls input:focus,
+        .quiz-controls select:focus {
+            border-color: var(--purple);
+        }
+
+        /* Responsive tweaks */
+        @media (max-width: 768px) {
+            .sidebar {
+                display: none;
+            }
+
+            .topbar .nav-links {
+                gap: 4px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- TOP BAR -->
+    <header class="topbar">
+        <div class="logo">
+            <span>BAYAZID</span>
+            <span class="badge">HS-02</span>
+        </div>
+        <div class="topbar-right">
+            <div class="status-dot" title="System Operational"></div>
+            <nav class="nav-links">
+                <a href="/">HOME</a>
+                <a href="/chat" class="active">CHAT</a>
+                <a href="/profile">PROFILE</a>
+            </nav>
+        </div>
+    </header>
+
+    <!-- TIMER STRIP -->
+    <div class="timer-strip">
+        <span class="label">SESSION</span>
+        <span class="val" id="session-time">--:--</span>
+        <span class="sep">|</span>
+        <span class="label">TASK</span>
+        <span id="session-task">IDLE</span>
+        <span class="sep">|</span>
+        <span class="label">TODAY</span>
+        <span class="val" id="today-total">0m</span>
+        <button class="timer-btn start" id="timer-toggle" onclick="openTimerDialog()">▶ START</button>
+    </div>
+
+    <div class="main-area">
+
+        <!-- SIDEBAR -->
+        <aside class="sidebar">
+            <div class="sidebar-section">MODES</div>
+            <button class="sidebar-btn active" onclick="setMode('chat')" id="btn-chat">
+                <span class="icon">💬</span> Chat
+            </button>
+            <button class="sidebar-btn" onclick="setMode('teach')" id="btn-teach">
+                <span class="icon">📡</span> Teach Me
+            </button>
+            <button class="sidebar-btn" onclick="setMode('quiz')" id="btn-quiz">
+                <span class="icon">⚔️</span> Quiz
+            </button>
+            <button class="sidebar-btn" onclick="setMode('code')" id="btn-code">
+                <span class="icon">⚙️</span> Code Review
+            </button>
+            <button class="sidebar-btn" onclick="setMode('plan')" id="btn-plan">
+                <span class="icon">🗺️</span> Study Plan
+            </button>
+
+            <div class="sidebar-section" style="margin-top:16px">COMMANDS</div>
+            <button class="sidebar-btn" onclick="insertCommand('/timer start ')">
+                <span class="icon">▶</span> Timer Start
+            </button>
+            <button class="sidebar-btn" onclick="insertCommand('/timer stop')">
+                <span class="icon">⏹</span> Timer Stop
+            </button>
+            <button class="sidebar-btn" onclick="insertCommand('/timer stats')">
+                <span class="icon">📊</span> Timer Stats
+            </button>
+            <button class="sidebar-btn" onclick="memory_clear()">
+                <span class="icon">🗑</span> Clear Memory
+            </button>
+        </aside>
+
+        <!-- CHAT -->
+        <div class="chat-wrapper">
+            <div id="messages">
+                <div class="msg ai">
+                    <div class="avatar ai">⚔</div>
+                    <div class="bubble">
+                        <strong>BAYAZID HS-02 ONLINE</strong><br>
+                        Cognitive warfare system activated. Ready to execute.<br><br>
+                        Use the sidebar to switch modes, or start typing. Commands: <code>/timer start [task]</code>,
+                        <code>/timer stop</code>, <code>/timer stats</code><br><br>
+                        <em>Execution over illusion. 🐸</em>
+                    </div>
+                </div>
+            </div>
+
+            <!-- MODE TABS -->
+            <div class="mode-bar">
+                <button class="mode-tab active" onclick="setMode('chat')" data-mode="chat">CHAT</button>
+                <button class="mode-tab" onclick="setMode('teach')" data-mode="teach">TEACH</button>
+                <button class="mode-tab" onclick="setMode('quiz')" data-mode="quiz">QUIZ</button>
+                <button class="mode-tab" onclick="setMode('code')" data-mode="code">CODE REVIEW</button>
+                <button class="mode-tab" onclick="setMode('plan')" data-mode="plan">STUDY PLAN</button>
+            </div>
+
+            <!-- QUIZ CONFIG PANEL (shown in quiz mode) -->
+            <div class="quiz-panel" id="quiz-panel">
+                <h3>⚔ QUIZ CONFIGURATION</h3>
+                <div class="quiz-controls">
+                    <input type="text" id="quiz-topic" placeholder="Topic (e.g. I2C Protocol)"
+                        style="flex:1;min-width:180px">
+                    <select id="quiz-diff">
+                        <option value="easy">EASY</option>
+                        <option value="medium" selected>MEDIUM</option>
+                        <option value="hard">HARD</option>
+                    </select>
+                    <select id="quiz-count">
+                        <option value="3">3 Q</option>
+                        <option value="5" selected>5 Q</option>
+                        <option value="10">10 Q</option>
+                    </select>
+                    <button class="send-btn" onclick="launchQuiz()">LAUNCH ⚡</button>
+                </div>
+            </div>
+
+            <!-- INPUT -->
+            <div class="input-area">
+                <div class="input-row">
+                    <textarea id="msg-input" rows="1"
+                        placeholder="Ask anything — /timer start [task] to begin focus session..."></textarea>
+                    <button class="send-btn" id="send-btn" onclick="sendMessage()">SEND ⚡</button>
+                </div>
+                <div class="tools-row">
+                    <label id="attach-label" for="attach-input">📎 ATTACH</label>
+                    <input type="file" id="attach-input" accept="image/*" onchange="handleAttach(event)">
+                    <span id="attach-preview"></span>
+                    <button class="tool-btn" id="depth-btn" onclick="cycleDepth()">DEPTH: STANDARD</button>
+                    <span class="hint-text">ENTER to send · SHIFT+ENTER for newline</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Timer Dialog -->
+    <div id="timer-dialog"
+        style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2000;align-items:center;justify-content:center;">
+        <div
+            style="background:var(--panel);border:1px solid var(--purple);border-radius:8px;padding:24px;min-width:300px;box-shadow:0 0 40px rgba(139,92,246,0.3);">
+            <h3 style="font-family:'Cinzel',serif;color:var(--violet);margin-bottom:16px;letter-spacing:.08em;">⚔ START
+                FOCUS SESSION</h3>
+            <input id="timer-task-input" type="text" placeholder="What are you working on?"
+                style="width:100%;background:var(--bg2);border:1px solid var(--border);color:var(--text);font-family:'Rajdhani',sans-serif;font-size:1rem;padding:10px;border-radius:4px;margin-bottom:14px;outline:none;">
+            <div style="display:flex;gap:10px;justify-content:flex-end;">
+                <button onclick="closeTimerDialog()"
+                    style="background:none;border:1px solid var(--border);color:var(--text-dim);padding:8px 16px;border-radius:4px;cursor:pointer;font-family:'Rajdhani',sans-serif;">Cancel</button>
+                <button onclick="startTimer()"
+                    style="background:linear-gradient(135deg,var(--purple),var(--violet-dim));color:#fff;border:none;padding:8px 20px;border-radius:4px;cursor:pointer;font-family:'Rajdhani',sans-serif;font-weight:600;">START
+                    ▶</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentMode = 'chat';
+        let currentDepth = 'standard';
+        let attachedImage = null;
+        let isStreaming = false;
+        let sessionStart = null;
+        let sessionTask = null;
+        let timerInterval = null;
+
+        const depths = ['quick', 'standard', 'deep'];
+        const depthLabels = { 'quick': 'QUICK', 'standard': 'STANDARD', 'deep': 'DEEP' };
+
+        // ── MODE SWITCHING ─────────────────────────────────────────────────────
+        function setMode(mode) {
+            currentMode = mode;
+            document.querySelectorAll('.mode-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.mode === mode);
+            });
+            document.querySelectorAll('.sidebar-btn').forEach(b => {
+                b.classList.toggle('active', b.id === 'btn-' + mode);
+            });
+            const quizPanel = document.getElementById('quiz-panel');
+            quizPanel.classList.toggle('visible', mode === 'quiz');
+
+            const placeholders = {
+                chat: 'Ask anything — /timer start [task] to begin...',
+                teach: 'What do you want to learn? (e.g. "Explain SPI protocol")',
+                quiz: 'Configure and launch quiz above, or type a topic...',
+                code: 'Paste code to review, or describe what to analyze...',
+                plan: 'e.g. "Study plan for computer vision, 4 weeks, goal: face recognition"'
+            };
+            document.getElementById('msg-input').placeholder = placeholders[mode] || '';
+        }
+
+        // ── DEPTH TOGGLE ───────────────────────────────────────────────────────
+        function cycleDepth() {
+            const idx = depths.indexOf(currentDepth);
+            currentDepth = depths[(idx + 1) % depths.length];
+            document.getElementById('depth-btn').textContent = `DEPTH: ${depthLabels[currentDepth]}`;
+        }
+
+        // ── COMMAND INSERT ─────────────────────────────────────────────────────
+        function insertCommand(cmd) {
+            const inp = document.getElementById('msg-input');
+            inp.value = cmd;
+            inp.focus();
+            inp.setSelectionRange(cmd.length, cmd.length);
+        }
+
+        // ── ATTACH ─────────────────────────────────────────────────────────────
+        function handleAttach(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            attachedImage = file;
+            document.getElementById('attach-preview').textContent = `📎 ${file.name}`;
+        }
+
+        // ── SEND ───────────────────────────────────────────────────────────────
+        async function sendMessage() {
+            if (isStreaming) return;
+            const inp = document.getElementById('msg-input');
+            const msg = inp.value.trim();
+            if (!msg) return;
+
+            inp.value = '';
+            inp.style.height = 'auto';
+            isStreaming = true;
+            document.getElementById('send-btn').disabled = true;
+
+            appendMessage('user', msg);
+            const aiMsg = appendMessage('ai', '');
+            const bubble = aiMsg.querySelector('.bubble');
+            showTyping(bubble);
+
+            try {
+                const form = new FormData();
+                form.append('message', buildMessageWithMode(msg));
+                if (attachedImage) form.append('image', attachedImage);
+
+                const res = await fetch('/message', { method: 'POST', body: form });
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+
+                let full = '';
+                bubble.innerHTML = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    full += decoder.decode(value, { stream: true });
+                    bubble.innerHTML = renderMarkdown(full);
+                    scrollToBottom();
+                }
+                if (!full) bubble.innerHTML = '<em style="color:var(--text-muted)">No response.</em>';
+            } catch (e) {
+                bubble.innerHTML = `<span style="color:var(--danger)">[ERROR] ${e.message}</span>`;
+            }
+
+            attachedImage = null;
+            document.getElementById('attach-input').value = '';
+            document.getElementById('attach-preview').textContent = '';
+            isStreaming = false;
+            document.getElementById('send-btn').disabled = false;
+            scrollToBottom();
+        }
+
+        function buildMessageWithMode(msg) {
+            if (currentMode === 'teach') return `teach depth:${currentDepth} — ${msg}`;
+            if (currentMode === 'plan') return `study plan for: ${msg}`;
+            if (currentMode === 'code') return `review my code:\n${msg}`;
+            return msg;
+        }
+
+        // ── QUIZ LAUNCH ─────────────────────────────────────────────────────────
+        async function launchQuiz() {
+            const topic = document.getElementById('quiz-topic').value.trim();
+            if (!topic) { alert('Enter a topic first.'); return; }
+            const diff = document.getElementById('quiz-diff').value;
+            const count = document.getElementById('quiz-count').value;
+
+            const aiMsg = appendMessage('ai', '');
+            const bubble = aiMsg.querySelector('.bubble');
+            showTyping(bubble);
+
+            try {
+                const form = new FormData();
+                form.append('topic', topic);
+                form.append('difficulty', diff);
+                form.append('num_questions', count);
+
+                const res = await fetch('/quiz/generate', { method: 'POST', body: form });
+                const data = await res.json();
+
+                if (data.error) {
+                    bubble.innerHTML = `<span style="color:var(--danger)">Quiz generation failed: ${data.error}</span>`;
+                    return;
+                }
+                renderQuiz(bubble, data);
+            } catch (e) {
+                bubble.innerHTML = `<span style="color:var(--danger)">[ERROR] ${e.message}</span>`;
+            }
+            scrollToBottom();
+        }
+
+        function renderQuiz(container, data) {
+            let html = `<strong style="color:var(--violet)">⚔ QUIZ: ${data.topic}</strong><br>
+    <span style="font-size:.8rem;color:var(--text-dim)">Difficulty: ${data.difficulty}</span><br><br>`;
+
+            data.questions.forEach((q, i) => {
+                // Escape correct answer for use in a data attribute (no onclick text injection)
+                const correctEscaped = (q.correct || '').replace(/"/g, '&quot;');
+                const explanationEscaped = (q.explanation || '').replace(/"/g, '&quot;');
+
+                html += `<div style="margin-bottom:16px;padding:12px;background:var(--bg3);border-radius:4px;border:1px solid var(--border)">
+      <div style="margin-bottom:8px;font-weight:600">${i + 1}. ${q.question}</div>
+      <div style="display:flex;flex-direction:column;gap:4px;"
+           id="opts-${i}"
+           data-correct="${correctEscaped}"
+           data-explanation="${explanationEscaped}"
+           data-expid="exp-${i}">`;
+
+                q.options.forEach(opt => {
+                    const optEscaped = (opt || '').replace(/"/g, '&quot;');
+                    html += `<button onclick="checkAnswer(this)"
+        data-opttext="${optEscaped}"
+        style="text-align:left;padding:6px 10px;border-radius:3px;border:1px solid var(--border);
+               background:transparent;color:var(--text);cursor:pointer;font-family:'Rajdhani',sans-serif;
+               font-size:.9rem;transition:all .2s"
+        onmouseover="if(!this.parentElement.dataset.answered)this.style.borderColor='var(--purple)'"
+        onmouseout="if(!this.parentElement.dataset.answered)this.style.borderColor='var(--border)'">
+        ${opt}</button>`;
+                });
+
+                html += `</div><div id="exp-${i}" style="margin-top:8px;font-size:.85rem;display:none;color:var(--text-dim)"></div></div>`;
+            });
+            container.innerHTML = html;
+        }
+
+        function checkAnswer(btn) {
+            const opts = btn.parentElement;
+            if (opts.dataset.answered) return;
+            opts.dataset.answered = '1';
+
+            const selected = btn.dataset.opttext || '';
+            const correct = opts.dataset.correct || '';
+            const isRight = selected === correct;
+
+            opts.querySelectorAll('button').forEach(b => {
+                b.disabled = true;
+                const optText = b.dataset.opttext || '';
+                if (optText === correct) {
+                    b.style.background = 'rgba(16,185,129,0.15)';
+                    b.style.borderColor = 'var(--success)';
+                    b.style.color = 'var(--success)';
+                } else if (optText === selected && !isRight) {
+                    b.style.background = 'rgba(220,38,38,0.12)';
+                    b.style.borderColor = 'var(--danger)';
+                    b.style.color = 'var(--danger)';
+                }
+            });
+
+            const expDiv = document.getElementById(opts.dataset.expid);
+            if (expDiv) {
+                const explanation = opts.dataset.explanation ? ` — ${opts.dataset.explanation}` : '';
+                expDiv.style.display = 'block';
+                expDiv.textContent = isRight ? `✓ Correct${explanation}` : `✗ Correct answer: ${correct}${explanation}`;
+                expDiv.style.color = isRight ? 'var(--success)' : 'var(--danger)';
+            }
+        }
+
+        // ── MESSAGE RENDERING ──────────────────────────────────────────────────
+        function appendMessage(role, content) {
+            const msgs = document.getElementById('messages');
+            const div = document.createElement('div');
+            div.className = `msg ${role}`;
+            const initials = role === 'ai' ? '⚔' : 'B';
+            div.innerHTML = `
+    <div class="avatar ${role === 'ai' ? 'ai' : 'user-av'}">${initials}</div>
+    <div class="bubble">${content ? renderMarkdown(content) : ''}</div>`;
+            msgs.appendChild(div);
+            scrollToBottom();
+            return div;
+        }
+
+        function showTyping(bubble) {
+            bubble.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+        }
+
+        function renderMarkdown(text) {
+            return text
+                .replace(/```([\w]*)\n?([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+                .replace(/^#{1,3}\s+(.+)/gm, '<strong style="color:var(--violet)">$1</strong>')
+                .replace(/\n\n/g, '<br><br>')
+                .replace(/\n/g, '<br>');
+        }
+
+        function scrollToBottom() {
+            const msgs = document.getElementById('messages');
+            msgs.scrollTop = msgs.scrollHeight;
+        }
+
+        // ── MEMORY CLEAR ───────────────────────────────────────────────────────
+        async function memory_clear() {
+            await fetch('/memory/clear', { method: 'POST' });
+            appendMessage('ai', '🗑 Memory cleared. Fresh context.');
+        }
+
+        // ── TIMER UI ───────────────────────────────────────────────────────────
+        function openTimerDialog() {
+            if (sessionTask) { stopTimer(); return; }
+            const d = document.getElementById('timer-dialog');
+            d.style.display = 'flex';
+            document.getElementById('timer-task-input').focus();
+        }
+
+        function closeTimerDialog() {
+            document.getElementById('timer-dialog').style.display = 'none';
+        }
+
+        async function startTimer() {
+            const task = document.getElementById('timer-task-input').value.trim();
+            if (!task) return;
+            closeTimerDialog();
+            sessionTask = task;
+            sessionStart = Date.now();
+
+            const form = new FormData();
+            form.append('task', task);
+            await fetch('/timer/start', { method: 'POST', body: form });
+
+            document.getElementById('session-task').textContent = task;
+            document.getElementById('timer-toggle').textContent = '⏹ STOP';
+            document.getElementById('timer-toggle').className = 'timer-btn stop';
+
+            timerInterval = setInterval(updateTimerDisplay, 1000);
+        }
+
+        async function stopTimer() {
+            await fetch('/timer/stop', { method: 'POST' });
+            sessionTask = null;
+            sessionStart = null;
+            clearInterval(timerInterval);
+
+            document.getElementById('session-task').textContent = 'IDLE';
+            document.getElementById('session-time').textContent = '--:--';
+            document.getElementById('timer-toggle').textContent = '▶ START';
+            document.getElementById('timer-toggle').className = 'timer-btn start';
+            fetchTodayTotal();
+        }
+
+        function updateTimerDisplay() {
+            if (!sessionStart) return;
+            const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
+            const h = Math.floor(elapsed / 3600);
+            const m = Math.floor((elapsed % 3600) / 60);
+            const s = elapsed % 60;
+            const fmt = h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+                : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+            document.getElementById('session-time').textContent = fmt;
+        }
+
+        async function fetchTodayTotal() {
+            try {
+                const r = await fetch('/timer/stats');
+                const d = await r.json();
+                const secs = d.today_total_seconds || 0;
+                const h = Math.floor(secs / 3600);
+                const m = Math.floor((secs % 3600) / 60);
+                document.getElementById('today-total').textContent = h ? `${h}h ${m}m` : `${m}m`;
+            } catch (e) { }
+        }
+
+        // ── TEXTAREA AUTO RESIZE ───────────────────────────────────────────────
+        document.getElementById('msg-input').addEventListener('input', function () {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 140) + 'px';
+        });
+
+        document.getElementById('msg-input').addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+        });
+
+        document.getElementById('timer-task-input').addEventListener('keydown', e => {
+            if (e.key === 'Enter') startTimer();
+            if (e.key === 'Escape') closeTimerDialog();
+        });
+
+        // Init
+        fetchTodayTotal();
+        setInterval(fetchTodayTotal, 60000);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+ollama
+youtube-transcript-api
+jinja2>=3.0.0,<3.1.0
+python-multipart
+aiofiles
+#sudo dnf install tesseract
+pytesseract
+pdf2image
+chromadb
+langchain-chroma
+langchain-google-genai
+langchain-community
+pypdf
+langchain-huggingface
