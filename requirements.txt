@@ -14,3 +14,16 @@ langchain-google-genai
 langchain-community
 pypdf
 langchain-huggingface
+langchain-text-spliders
+langchain-core
+langchain-openai
+langsmith
+tiktoken
+pandas
+numpy
+scikit-learn
+requests
+beautifulsoup4
+lxml
+markdown2
+python-dotenv

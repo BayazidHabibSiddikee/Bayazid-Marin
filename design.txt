@@ -1,0 +1,41 @@
+vpa/
+├── app.py                  ← Marin's FastAPI (merged main, was app.py)
+├── bayazid.py              ← Bayazid AI engine
+├── marin.py                ← Marin AI engine
+├── marin_fier.py           ← Marin's classifier
+├── classifier.py           ← Bayazid's classifier
+├── config.py               ← Shared constants
+│
+├── rag/
+│   └── loader.py           ← Single shared RAG loader
+│
+├── doc/                    ← Shared PDF books (one source of truth)
+├── faiss_db/               ← Shared vector index (both read from here)
+│
+├── games/
+│   └── tiktaktoe.py        ← Marin's game engine
+│
+├── templates/
+│   ├── index.html          ← Landing — intro to both
+│   ├── chat.html           ← Chat with AI switcher toggle
+│   └── profile.html        ← Shared stats (both timers shown)
+│
+├── static/
+│   ├── uploads/            ← Runtime image uploads
+│   ├── generated/          ← Generated images
+│   └── screenshots/        ← README images (committed to git)
+│
+└── requirements.txt
+
+
+User drops a topic
+    ↓
+Round 1: Marin argues her position  (streaming)
+    ↓
+Round 1: Bayazid reads Marin's full response, argues his  (streaming)
+    ↓
+Round 2: Marin rebuts Bayazid specifically  (streaming)
+    ↓
+Round 2: Bayazid counter-rebuts  (streaming)
+    ↓
+Judge AI reads the full transcript → conclusion  (streaming)
