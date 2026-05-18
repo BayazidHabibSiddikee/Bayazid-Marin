@@ -32,7 +32,7 @@ BAYAZID_HISTORY_FILE = os.path.join(BASE_DIR, "bayazid_history.json")
 # Arena uses the base model directly — same model, clean slate per debate
 ARENA_MODEL = MODEL  # "gemma4:31b-cloud"
 
-app = FastAPI(title="Arena — Marin vs Bayazid")
+app = FastAPI(title="Arena — Marin vs Bayazid HS-02")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -181,7 +181,7 @@ def _stream_debate(system_prompt: str, user_prompt: str, context: str = ""):
         model=ARENA_MODEL,
         messages=messages,
         stream=True,
-        options={"temperature": 0.75, "num_predict": 600},
+        options={"temperature": 0.75, "num_predict": 800},
     )
     for chunk in stream:
         content = chunk.get("message", {}).get("content", "")
@@ -207,7 +207,7 @@ def _stream_judge(topic: str, marin_arg: str, bayazid_arg: str):
         model=ARENA_MODEL,
         messages=messages,
         stream=True,
-        options={"temperature": 0.5, "num_predict": 700},
+        options={"temperature": 0.5, "num_predict": 800},
     )
     for chunk in stream:
         content = chunk.get("message", {}).get("content", "")

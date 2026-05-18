@@ -1,9 +1,6 @@
-
----
-
 ## image.py
 
-```python
+#python
 """
 Leo - Image Analysis Module
 Uses configured MODEL for vision analysis.
@@ -23,7 +20,7 @@ import time
 try:
     from bayazid import MODEL
 except ImportError:
-    MODEL = "gemma4:31b-cloud"
+    MODEL = "moondream"
 
 # ── Config ─────────────────────────────────────────────────────────────────
 CHARACTER_NAME = "leo"
