@@ -2,7 +2,7 @@ fastapi
 uvicorn[standard]
 ollama
 youtube-transcript-api
-jinja2>=3.0.0,<3.1.0
+jinja2
 python-multipart
 aiofiles
 #sudo dnf install tesseract

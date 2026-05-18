@@ -7,7 +7,7 @@
 
 A locally-running, multi-AI web system with two distinct AI personalities served from **two separate FastAPI servers** on different ports. Both run on **Ollama** (local LLM inference — no cloud, no API keys, no subscriptions). A third interface called **Arena** lets both AIs debate a topic with a judge synthesizing the conclusion.
 
-The system is built for one user: **Bayazid**, a self-directed engineering student in Bogura, Bangladesh, focused on embedded systems, IoT, ML, computer vision, and robotics.
+The system is built for one user: **Bayazid**, a self-directed engineering student in Rajshahi (RUET), Bangladesh, focused on embedded systems, IoT, ML, computer vision, and robotics.
 
 ---
 

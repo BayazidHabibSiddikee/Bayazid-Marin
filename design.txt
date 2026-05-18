@@ -1,32 +1,45 @@
 vpa/
-├── app.py                  ← Marin's FastAPI (merged main, was app.py)
-├── bayazid.py              ← Bayazid AI engine
-├── marin.py                ← Marin AI engine
-├── marin_fier.py           ← Marin's classifier
-├── classifier.py           ← Bayazid's classifier
-├── config.py               ← Shared constants
+├── app.py                  ← Marin's FastAPI server (port 5069)
+├── main.py                 ← Bayazid's FastAPI server (port 5070)
+│-- arena.py
+|
+├── marin.py                ← Marin AI engine (streaming, memory, vibe, structured cards)
+├── bayazid.py              ← Bayazid AI engine (streaming, memory, teach, quiz, review, plan)
+│
+├── marin_fier.py           ← Marin's intent + vibe classifier (regex, 0ms)
+├── classifier.py           ← Bayazid's intent classifier (regex, 0ms)
+│
+├── expression.py           ← VSeeFace OSC — controls Marin's 2D avatar expressions
+├── config.py               ← Shared constants (models, ports, paths, app list)
 │
 ├── rag/
-│   └── loader.py           ← Single shared RAG loader
-│
-├── doc/                    ← Shared PDF books (one source of truth)
-├── faiss_db/               ← Shared vector index (both read from here)
+│   └── loader.py           ← Shared FAISS RAG loader (both AIs import this)
 │
 ├── games/
-│   └── tiktaktoe.py        ← Marin's game engine
+│   └── tiktaktoe.py        ← Marin's Tic Tac Toe game engine
+│
+├── doc/                    ← Drop PDF textbooks here — shared by both AIs
+├── faiss_db/               ← FAISS vector index (auto-built, shared)
+│   ├── index.faiss
+│   ├── index.pkl
+│   └── manifest.json       ← Tracks which PDFs are indexed
 │
 ├── templates/
-│   ├── index.html          ← Landing — intro to both
-│   ├── chat.html           ← Chat with AI switcher toggle
-│   └── profile.html        ← Shared stats (both timers shown)
+│   ├── index.html          ← Shared landing page (links to both chats + Arena)
+│   ├── marin_chat.html     ← Marin's chat interface (cherry blossom theme)
+│   ├── bayazid_chat.html   ← Bayazid's chat interface (sword king theme)
+│   ├── arena_chat.html     ← Arena — Marin vs Bayazid debate UI
+│   └── profile.html        ← Shared profile — both timers, stats, projects
 │
 ├── static/
-│   ├── uploads/            ← Runtime image uploads
-│   ├── generated/          ← Generated images
-│   └── screenshots/        ← README images (committed to git)
+│   ├── uploads/            ← Runtime image uploads (gitignored)
+│   ├── generated/          ← AI-generated images (gitignored)
+│   └── screenshots/        ← README screenshots (committed to git)
+│
+├── bayazid_history.json    ← Bayazid's persistent conversation memory
+├── marin_history.json      ← Marin's persistent conversation memory
 │
 └── requirements.txt
-
 
 User drops a topic
     ↓
