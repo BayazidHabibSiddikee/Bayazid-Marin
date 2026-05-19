@@ -377,8 +377,44 @@ class BookRAG:
         self._save_manifest()
 
 
-# Global RAG instance
-rag = BookRAG() if FAISS_AVAILABLE else None
+# ═══════════════════════════════════════════════════════════════════════════════
+# REMOTE RAG CLIENT — queries rag_server.py instead of loading FAISS locally
+# ═══════════════════════════════════════════════════════════════════════════════
+import httpx
+
+class _RemoteRAG:
+    """Lightweight proxy — no FAISS, no embeddings, no RAM bomb."""
+
+    RAG_URL = "http://127.0.0.1:5080/search"
+
+    def search(self, query: str, k: int = 20):
+        try:
+            r = httpx.post(self.RAG_URL, json={"query": query, "k": k}, timeout=10)
+            r.raise_for_status()
+            return r.json().get("results", [])
+        except Exception as e:
+            print(f"⚠️ RAG server error: {e}")
+            return []
+
+    def get_context_for_teaching(self, topic: str, k: int = 20) -> str:
+        results = self.search(topic, k=k)
+        if not results:
+            return ""
+        by_source: Dict[str, List[str]] = {}
+        for r in results:
+            by_source.setdefault(r["source"], []).append(r["content"])
+        parts = ["[KNOWLEDGE FROM YOUR BOOKS]\n"]
+        for source, contents in list(by_source.items())[:5]:
+            parts.append(f"\n📖 From {source}:")
+            parts.append("\n".join(contents[:3])[:800])
+        return "\n".join(parts)
+
+    def get_index_report(self) -> str:
+        return "📡 RAG is served remotely via rag_server.py"
+
+
+# Global RAG instance — remote only, no local FAISS load
+rag = _RemoteRAG()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -589,12 +625,8 @@ async def main(
     if study_context:
         context_parts.append(f"\n[STUDY CONTEXT]\n{study_context}")
 
-    if use_rag and rag and not image_path:
-        # NEW
-        import httpx
-        results = httpx.post("http://localhost:5080/search", 
-                            params={"query": user_message, "k": 20}).json()
-        book_context = "\n".join([r["content"] for r in results])
+    if use_rag and not image_path:
+        book_context = await asyncio.to_thread(rag.get_context_for_teaching, user_message, 10)
         if book_context:
             context_parts.append(book_context)
             context_parts.append(

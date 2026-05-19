@@ -60,6 +60,10 @@ docker-compose
 ├── marin         (port 5071)  
 └── ollama        (port 11434)
 
+fastapi run rag_server.py --port 5080   # first — owns FAISS
+fastapi run main.py      --port 5070
+fastapi run app.py       --port 5069
+fastapi run arena.py     --port 5071
 
 #I need to add a rag server just because marin, bayazid, battle costs 3x RAM for faiss_db to load and work with so I need x 
 #And simple solution is to add a server to talk with all three, also Im adding 10 search at a time not 180 books at a time to reduce RAM usages
@@ -87,3 +91,13 @@ import httpx
 results = httpx.post("http://localhost:5080/search", 
                      params={"query": user_message, "k": 20}).json()
 book_context = "\n".join([r["content"] for r in results])
+
+
+
+
+
+
+
+
+
+### we solved the problem but still there is a problem as bayazid and marin loads the RAG again ??
