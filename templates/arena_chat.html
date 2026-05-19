@@ -745,6 +745,8 @@ function render(text) {
 // STATE
 // ═══════════════════════════════════════════════════════════════
 let fighting = false;
+let roundNumber = 0;
+let lastJudgeVerdict = '';   // stored so "Fight Again" can pass it as context
 
 function setStatus(s) {
   const pill = document.getElementById('status-pill');
@@ -775,7 +777,7 @@ function addRoundBadge(scrollId, label) {
   scrollDown(scrollId);
 }
 
-function showTyping(scrollId, dotClass) {
+function showTyping(scrollId) {
   const id = `typing-${scrollId}`;
   if (document.getElementById(id)) return;
   const el = document.createElement('div');
@@ -819,8 +821,7 @@ function scrollDown(scrollId, el) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// STREAM from /arena/stream  (SSE-style text/plain)
-// Falls back gracefully if backend not connected
+// STREAM from /arena/stream
 // ═══════════════════════════════════════════════════════════════
 async function streamFromBackend(payload, scrollId) {
   const bubbleId = addBubble(scrollId, '', true);
@@ -841,9 +842,7 @@ async function streamFromBackend(payload, scrollId) {
       scrollDown(scrollId);
     }
   } catch (e) {
-    // Demo fallback — shows the UI working without a live server
-    full = `*(server not connected — this is a UI preview)*\n\n` +
-           `**${payload.character}** would argue about: *${payload.topic}*`;
+    full = `*(server not connected — UI preview)*\n\n**${payload.character}** would argue about: *${payload.topic}*`;
     updateBubble(bubbleId, full);
   }
   return full;
@@ -851,9 +850,12 @@ async function streamFromBackend(payload, scrollId) {
 
 // ═══════════════════════════════════════════════════════════════
 // MAIN FIGHT FLOW
+// isFightAgain = true  →  passes judge's previous verdict as context
+//                         so both characters respond to it
 // ═══════════════════════════════════════════════════════════════
-async function startFight() {
+async function startFight(isFightAgain = false) {
   if (fighting) return;
+
   const topic = document.getElementById('topic-input').value.trim();
   if (!topic) {
     document.getElementById('topic-input').focus();
@@ -863,26 +865,36 @@ async function startFight() {
   }
 
   fighting = true;
+  roundNumber++;
   document.getElementById('fight-btn').disabled = true;
   document.getElementById('topic-input').disabled = true;
 
-  // Clear empty states
-  document.getElementById('marin-empty').remove();
+  // ── Safe clear of empty-state placeholders (they may not exist after round 1) ──
+  document.getElementById('marin-empty')?.remove();
   document.getElementById('bayazid-empty')?.remove();
-  // Hide judge
+
+  // Hide judge panel and clear it for the new round
   document.getElementById('judge-panel').classList.remove('open');
   document.getElementById('judge-scroll').innerHTML = '';
 
   setStatus('fighting');
   setLoading(true);
 
-  // ── TOPIC ECHO ───────────────────────────────────────────────
-  addTopicEcho('marin-scroll', topic);
-  addTopicEcho('bayazid-scroll', topic);
+  // Build judge context for "Fight Again" — both characters get to see the verdict
+  const judgeContext = (isFightAgain && lastJudgeVerdict)
+    ? `The judge's verdict from the previous round:\n\n${lastJudgeVerdict}\n\nNow respond to the judge's analysis and re-argue your position.`
+    : '';
 
-  // ── ROUND 1 BADGES ──────────────────────────────────────────
-  addRoundBadge('marin-scroll', 'ROUND 1');
-  addRoundBadge('bayazid-scroll', 'ROUND 1');
+  // ── ROUND BADGE ─────────────────────────────────────────────
+  const roundLabel = isFightAgain ? `ROUND ${roundNumber} — REMATCH` : `ROUND ${roundNumber}`;
+  addRoundBadge('marin-scroll', roundLabel);
+  addRoundBadge('bayazid-scroll', roundLabel);
+
+  // ── TOPIC ECHO (only on first round, not on rematch) ────────
+  if (!isFightAgain) {
+    addTopicEcho('marin-scroll', topic);
+    addTopicEcho('bayazid-scroll', topic);
+  }
 
   // ── MARIN ARGUES ────────────────────────────────────────────
   showTyping('marin-scroll');
@@ -890,30 +902,30 @@ async function startFight() {
     character: 'marin',
     role: 'argue',
     topic,
-    context: ''
+    context: judgeContext
   }, 'marin-scroll');
   hideTyping('marin-scroll');
 
-  // ── BAYAZID ARGUES (sees Marin's full argument) ──────────────
+  // ── BAYAZID ARGUES (sees Marin's arg + judge context) ───────
   showTyping('bayazid-scroll');
   const bayazidArg = await streamFromBackend({
     character: 'bayazid',
     role: 'argue',
     topic,
-    context: `Marin's argument:\n${marinArg}`
+    context: judgeContext
+      ? `${judgeContext}\n\nMarin just argued:\n${marinArg}`
+      : `Marin's argument:\n${marinArg}`
   }, 'bayazid-scroll');
   hideTyping('bayazid-scroll');
 
   setLoading(false);
 
-  // ── JUDGE CONCLUSION ─────────────────────────────────────────
-  // open panel first so user sees the transition
+  // ── JUDGE ───────────────────────────────────────────────────
   document.getElementById('judge-panel').classList.add('open');
   document.querySelector('.judge-sub').textContent = 'synthesizing…';
 
   const judgeEl = document.createElement('div');
   judgeEl.className = 'judge-bubble';
-  judgeEl.id = 'judge-bubble';
   document.getElementById('judge-scroll').appendChild(judgeEl);
 
   let judgeFull = '';
@@ -925,7 +937,9 @@ async function startFight() {
         character: 'judge',
         role: 'conclude',
         topic,
-        context: `Marin argued:\n${marinArg}\n\nBayazid argued:\n${bayazidArg}`
+        marin_arg: marinArg,
+        bayazid_arg: bayazidArg,
+        context: isFightAgain ? `This is round ${roundNumber}. Previous verdict:\n${lastJudgeVerdict}` : ''
       })
     });
     const reader = res.body.getReader();
@@ -938,37 +952,45 @@ async function startFight() {
       document.getElementById('judge-scroll').scrollTop = document.getElementById('judge-scroll').scrollHeight;
     }
   } catch(e) {
-    judgeEl.innerHTML = render(`*(judge offline — UI preview mode)*\n\nBoth Marin and Bayazid raised compelling points about **"${topic}"**. A balanced conclusion would acknowledge the creative and emotional dimensions Marin identified, while integrating Bayazid's systematic framework. The optimal path forward merges intuition with execution.`);
+    judgeFull = `*(judge offline)*\n\nBoth argued about **"${topic}"**.`;
+    judgeEl.innerHTML = render(judgeFull);
   }
 
-  document.querySelector('.judge-sub').textContent = 'verdict delivered';
+  // Save verdict for next "Fight Again"
+  lastJudgeVerdict = judgeFull;
+
+  document.querySelector('.judge-sub').textContent = `round ${roundNumber} verdict delivered`;
   setStatus('done');
   fighting = false;
   document.getElementById('fight-btn').disabled = false;
   document.getElementById('fight-btn').textContent = '⚔ FIGHT AGAIN';
+  document.getElementById('fight-btn').onclick = () => startFight(true);
   document.getElementById('topic-input').disabled = false;
 }
 
 // ═══════════════════════════════════════════════════════════════
-// RESET
+// RESET — clears everything, goes back to round 0
 // ═══════════════════════════════════════════════════════════════
 function resetArena() {
   if (fighting) return;
-  // Marin scroll
-  const ms = document.getElementById('marin-scroll');
-  ms.innerHTML = `<div class="empty-state" id="marin-empty"><div class="empty-icon">🌸</div><div>Marin is waiting…</div></div>`;
-  // Bayazid scroll
-  const bs = document.getElementById('bayazid-scroll');
-  bs.innerHTML = `<div class="empty-state" id="bayazid-empty"><div class="empty-icon">⚔</div><div>BAYAZID IS IDLE</div></div>`;
-  // Judge
+
+  roundNumber = 0;
+  lastJudgeVerdict = '';
+
+  document.getElementById('marin-scroll').innerHTML =
+    `<div class="empty-state" id="marin-empty"><div class="empty-icon">🌸</div><div>Marin is waiting…</div></div>`;
+  document.getElementById('bayazid-scroll').innerHTML =
+    `<div class="empty-state" id="bayazid-empty"><div class="empty-icon">⚔</div><div>BAYAZID IS IDLE</div></div>`;
+
   document.getElementById('judge-panel').classList.remove('open');
   document.getElementById('judge-scroll').innerHTML = '';
   document.querySelector('.judge-sub').textContent = 'reading both arguments…';
-  // UI
+
   document.getElementById('topic-input').value = '';
   document.getElementById('topic-input').disabled = false;
   document.getElementById('fight-btn').disabled = false;
   document.getElementById('fight-btn').textContent = '⚔ BEGIN FIGHT';
+  document.getElementById('fight-btn').onclick = () => startFight(false);
   setStatus('idle');
   setLoading(false);
 }

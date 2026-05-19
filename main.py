@@ -32,7 +32,7 @@ async def get_index(request: Request):
 
 @app.get("/chat", response_class=HTMLResponse)
 async def get_chat(request: Request):
-    return templates.TemplateResponse(request=request, name="chat.html")
+    return templates.TemplateResponse(request=request, name="bayazid_chat.html")
 
 @app.get("/profile", response_class=HTMLResponse)
 async def get_profile(request: Request):
@@ -109,7 +109,7 @@ async def handle_message(
         )
 
 
-# ── QUIZ ENDPOINT (returns JSON) ──────────────────────────────────────────
+# ── QUIZ ENDPOINT (streams the quiz as plain text) ───────────────────────
 
 @app.post("/quiz/generate")
 async def generate_quiz_endpoint(
@@ -117,8 +117,10 @@ async def generate_quiz_endpoint(
     difficulty: str = Form("medium"),
     num_questions: int = Form(5)
 ):
-    result = await generate_quiz(topic, difficulty, num_questions)
-    return JSONResponse(result)
+    return StreamingResponse(
+        generate_quiz(topic, difficulty, num_questions),
+        media_type="text/plain"
+    )
 
 
 # ── TIMER API ─────────────────────────────────────────────────────────────

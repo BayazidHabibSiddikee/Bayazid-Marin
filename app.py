@@ -10,7 +10,7 @@ import ollama
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="marin_plates")
+templates = Jinja2Templates(directory="templates")
 
 UPLOAD_FOLDER = 'static/uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -87,7 +87,7 @@ async def get_index(request: Request):
 
 @app.get("/chat", response_class=HTMLResponse)
 async def get_chat(request: Request):
-    return templates.TemplateResponse(request=request, name="chat.html")
+    return templates.TemplateResponse(request=request, name="marin_chat.html")
 
 @app.post("/upload")
 async def upload_image(image: UploadFile = File(...)):
@@ -97,6 +97,12 @@ async def upload_image(image: UploadFile = File(...)):
     with open(filepath, "wb") as buf:
         buf.write(await image.read())
     return {"ok": True, "path": f"/{filepath}"}
+
+from fastapi.responses import RedirectResponse
+
+@app.get("/arena", response_class=HTMLResponse)
+async def get_arena(request: Request):
+    return RedirectResponse(url="http://localhost:5071/arena")
 
 @app.post("/message")
 async def handle_message(message: str = Form(...), image: UploadFile = File(None)):

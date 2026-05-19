@@ -52,3 +52,38 @@ Round 2: Marin rebuts Bayazid specifically  (streaming)
 Round 2: Bayazid counter-rebuts  (streaming)
     ↓
 Judge AI reads the full transcript → conclusion  (streaming)
+
+
+docker-compose
+├── rag_server    (port 5080) — owns FAISS
+├── bayazid       (port 5070)
+├── marin         (port 5071)  
+└── ollama        (port 11434)
+
+
+#I need to add a rag server just because marin, bayazid, battle costs 3x RAM for faiss_db to load and work with so I need x 
+#And simple solution is to add a server to talk with all three, also Im adding 10 search at a time not 180 books at a time to reduce RAM usages
+
+
+## RAG server.py
+The order is:
+Step 1 — create rag_server.py first:
+python# rag_server.py
+from fastapi import FastAPI
+from bayazid import rag
+
+app = FastAPI()
+
+@app.post("/search")
+def search(query: str, k: int = 20):
+    return rag.search(query, k=k)
+Step 2 — run it:
+bashuvicorn rag_server:app --port 5080
+Step 3 — only then replace in bayazid.py inside the main() function, this block:
+python# OLD
+book_context = rag.get_context_for_teaching(user_message, k=20)
+python# NEW
+import httpx
+results = httpx.post("http://localhost:5080/search", 
+                     params={"query": user_message, "k": 20}).json()
+book_context = "\n".join([r["content"] for r in results])

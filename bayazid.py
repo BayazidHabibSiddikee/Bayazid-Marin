@@ -194,7 +194,7 @@ class BookRAG:
         self._index_documents()
 
     def _index_documents(self):
-        """Full build: process every PDF in doc/."""
+        """Full build: process every PDF in doc/ in batches to save RAM."""
         if not self.doc_dir.exists():
             print(f"⚠️ Document directory not found: {self.doc_dir}")
             return
@@ -208,12 +208,20 @@ class BookRAG:
         already_indexed = set(self.manifest["indexed"])
         already_failed  = {e["file"] for e in self.manifest["failed"]}
 
-        for pdf_path in pdf_files:
+        BATCH_SIZE = 10
+
+        for i, pdf_path in enumerate(pdf_files):
             if pdf_path.name in already_indexed or pdf_path.name in already_failed:
                 continue
-            self._index_single_file(pdf_path)
+            self._index_single_file(pdf_path)          # ← 12 spaces
 
-        if self.vectorstore:
+            if (i + 1) % BATCH_SIZE == 0 and self.vectorstore:   # ← 12 spaces
+                self.vectorstore.save_local(str(self.faiss_dir))
+                self._save_manifest()
+                gc.collect()
+                print(f"  💾 Checkpoint saved at {i+1} files")
+
+        if self.vectorstore:                            # ← 8 spaces
             self.vectorstore.save_local(str(self.faiss_dir))
             self._save_manifest()
             print(
@@ -223,6 +231,8 @@ class BookRAG:
             )
         else:
             print("⚠️ No documents were successfully indexed.")
+
+
 
     def _index_new_documents(self):
         """Incremental update — only process newly added PDFs."""
@@ -374,23 +384,29 @@ rag = BookRAG() if FAISS_AVAILABLE else None
 # ═══════════════════════════════════════════════════════════════════════════════
 # TIMER & SESSION TRACKING
 # ═══════════════════════════════════════════════════════════════════════════════
+
+TIMER_FILE = os.path.join(BASE_DIR, "timer_sessions.json")
+
 class StudyTimer:
     def __init__(self):
         self.sessions: List[Dict[str, Any]] = []
         self.current_session: Optional[Dict[str, Any]] = None
+        self._load_sessions()
 
-    def start_session(self, task: str) -> Dict[str, Any]:
-        if self.current_session:
-            self.end_session()
-        self.current_session = {
-            "task":           task,
-            "start_time":     time.time(),
-            "start_datetime": datetime.now().isoformat(),
-            "end_time":       None,
-            "duration":       0,
-            "status":         "active",
-        }
-        return self.current_session
+    def _load_sessions(self):
+        if os.path.exists(TIMER_FILE):
+            try:
+                with open(TIMER_FILE, "r") as f:
+                    self.sessions = json.load(f)
+            except Exception:
+                self.sessions = []
+
+    def _save_sessions(self):
+        try:
+            with open(TIMER_FILE, "w") as f:
+                json.dump(self.sessions, f, indent=2)
+        except Exception as e:
+            print(f"⚠️ Timer save error: {e}")
 
     def end_session(self) -> Optional[Dict[str, Any]]:
         if not self.current_session:
@@ -574,7 +590,11 @@ async def main(
         context_parts.append(f"\n[STUDY CONTEXT]\n{study_context}")
 
     if use_rag and rag and not image_path:
-        book_context = rag.get_context_for_teaching(user_message, k=20)
+        # NEW
+        import httpx
+        results = httpx.post("http://localhost:5080/search", 
+                            params={"query": user_message, "k": 20}).json()
+        book_context = "\n".join([r["content"] for r in results])
         if book_context:
             context_parts.append(book_context)
             context_parts.append(
@@ -651,34 +671,58 @@ async def teach_topic(topic: str, depth: str = "standard") -> AsyncIterator[str]
 # QUIZ GENERATOR
 # ═══════════════════════════════════════════════════════════════════════════════
 async def generate_quiz(topic: str, difficulty: str = "medium", num_questions: int = 5) -> AsyncIterator[str]:
+    import random
+
     if rag:
-        book_context = rag.get_context_for_teaching(topic, k=15)
+        # Randomize k slightly so different chunks get pulled each time
+        k = random.randint(12, 20)
+        book_context = rag.get_context_for_teaching(topic, k=k)
         book_note = f"Using context from your book library on: {topic}"
     else:
         book_context = ""
         book_note = "Using general knowledge (no books indexed)"
 
+    # Seed phrase forces the model to generate a unique set each call
+    seed_phrase = random.choice([
+        "Focus on edge cases and tricky concepts.",
+        "Focus on practical application and real-world usage.",
+        "Focus on underlying theory and first principles.",
+        "Focus on common mistakes and misconceptions.",
+        "Focus on advanced nuances an expert would know.",
+        "Focus on comparisons between related concepts.",
+        "Focus on problem-solving and debugging scenarios.",
+        "Focus on definitions, terminology, and precision.",
+    ])
+
+    # Unique session ID so the model doesn't produce a cached-feeling response
+    session_id = random.randint(1000, 9999)
+
     system_prompt = (
         f"{BASE_CHARACTER}\n\n"
-        f"[QUIZ MODE]\n"
+        f"[QUIZ MODE — SESSION {session_id}]\n"
         f"Topic: {topic} | Difficulty: {difficulty} | Questions: {num_questions}\n"
         f"{book_note}\n\n"
-        f"Generate a quiz with exactly {num_questions} questions.\n"
-        f"Difficulty: {difficulty}\n\n"
-        "FORMAT:\n"
+        f"Generate a FRESH quiz with exactly {num_questions} UNIQUE questions.\n"
+        f"Difficulty: {difficulty}\n"
+        f"Angle: {seed_phrase}\n\n"
+        "RULES:\n"
+        "- Never repeat questions from previous sessions\n"
+        "- Each question must test a DIFFERENT concept or angle\n"
+        "- Vary question types: definition, application, comparison, debugging, calculation\n\n"
+        "FORMAT (strictly follow):\n"
         "**Q1:** [Question]\n"
         "A) [Option] B) [Option] C) [Option] D) [Option]\n"
-        "**Answer:** [Correct] — [Brief explanation]\n\n"
-        "Test deep understanding, not memorization. Reference books where relevant.\n"
+        "**Answer:** [Correct letter] — [Brief explanation]\n\n"
+        "Test deep understanding, not memorization.\n"
         f"{book_context}"
     )
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user",   "content": f"Generate a {difficulty} quiz about {topic}"},
+        {"role": "user",   "content": f"Generate a brand new {difficulty} quiz about {topic}. Make it different from any previous quiz on this topic."},
     ]
     try:
-        async for chunk in _stream_model(messages, num_predict=2000):
+        async for chunk in _stream_model(messages, num_predict=2000, temperature=1.2):
             yield chunk
     except Exception as e:
         yield f"[ERROR] Quiz generation failed: {str(e)}"

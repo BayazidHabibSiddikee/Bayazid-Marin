@@ -741,6 +741,15 @@
             sendBtn.disabled = false;
             input.focus();
         }
+        
+        async function loadRecentHistory() {
+			  const res = await fetch('/memory/status');
+			  const data = await res.json();
+			  const recent = data.messages.slice(-4); // last 2 exchanges (user+assistant)
+			  recent.forEach(msg => appendMessage(msg.role, msg.content));
+		}
+
+		window.addEventListener('load', loadRecentHistory);
 
         input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
     </script>

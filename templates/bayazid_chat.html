@@ -1175,7 +1175,20 @@
                 document.getElementById('today-total').textContent = h ? `${h}h ${m}m` : `${m}m`;
             } catch (e) { }
         }
+		
+		
+		
+		
+		async function loadRecentHistory() {
+			  const res = await fetch('/memory/status');
+			  const data = await res.json();
+			  const recent = data.messages.slice(-4); // last 2 exchanges (user+assistant)
+			  recent.forEach(msg => appendMessage(msg.role, msg.content));
+		}
 
+		window.addEventListener('load', loadRecentHistory);
+		
+		
         // ── TEXTAREA AUTO RESIZE ───────────────────────────────────────────────
         document.getElementById('msg-input').addEventListener('input', function () {
             this.style.height = 'auto';
