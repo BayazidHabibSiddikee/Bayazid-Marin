@@ -1,1 +1,4 @@
-uvicorn rag_server:app --port 5080
+#!/usr/bin/env bash
+
+# Start RAG server on port 5080
+python rag_server.py

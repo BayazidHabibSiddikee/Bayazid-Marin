@@ -522,7 +522,7 @@ def response(
         full_reply += piece
         yield piece
 
-    save_to_history(bare_question, full_reply)
+    save_to_history(prompt, full_reply)
     marin_vibe = analyze_marin_vibe(full_reply)
     save_vibe(user_vibe, marin_vibe)
     yield f"__VIBE__{marin_vibe}"

@@ -286,16 +286,11 @@
         <span class="vibe-badge" id="vibe">✨ lovely</span>
         <div style="display:flex;gap:6px;margin-left:12px">
             <a href="http://localhost:5070/chat" style="font-family:monospace;font-size:.65rem;color:#8b5cf666;text-decoration:none;padding:3px 10px;border:1px solid #8b5cf622;border-radius:3px;transition:all .2s" onmouseover="this.style.color='#a78bfa';this.style.borderColor='#8b5cf6'" onmouseout="this.style.color='#8b5cf666';this.style.borderColor='#8b5cf622'">⚔ BAYAZID</a>
-            <a href="http://localhost:5070/arena" style="font-family:monospace;font-size:.65rem;color:#fbbf2488;text-decoration:none;padding:3px 10px;border:1px solid #fbbf2433;border-radius:3px;transition:all .2s" onmouseover="this.style.color='#fbbf24';this.style.borderColor='#fbbf24'" onmouseout="this.style.color='#fbbf2488';this.style.borderColor='#fbbf2433'">⚡ ARENA</a>
+            <a href="http://localhost:5071/arena" style="font-family:monospace;font-size:.65rem;color:#fbbf2488;text-decoration:none;padding:3px 10px;border:1px solid #fbbf2433;border-radius:3px;transition:all .2s" onmouseover="this.style.color='#fbbf24';this.style.borderColor='#fbbf24'" onmouseout="this.style.color='#fbbf2488';this.style.borderColor='#fbbf2433'">⚡ ARENA</a>
         </div>
     </header>
 
-    <div id="messages">
-        <div class="msg bot">
-            <div class="msg-avatar">🌸</div>
-            <div class="bubble">Limon ~! You finally showed up! I was getting impatient ♡</div>
-        </div>
-    </div>
+    <div id="messages"></div>
 
     <!-- Image Preview -->
     <div id="image-preview">
@@ -635,7 +630,7 @@
             if (role === 'user') {
                 html = `<div class="bubble">`;
                 if (imageUrl) html += `<img src="${imageUrl}" class="chat-image" onclick="window.open(this.src)">`;
-                if (text) html += `<div style="margin-top:8px">${esc(text)}</div>`;
+                if (text) html += `<div style="margin-top:8px">${esc(text).replace(/\n/g, '<br>')}</div>`;
                 html += `</div>`;
             } else {
                 html = `<div class="msg-avatar">🌸</div><div class="bubble">${renderContent(text)}</div>`;
@@ -743,13 +738,24 @@
         }
         
         async function loadRecentHistory() {
-			  const res = await fetch('/memory/status');
-			  const data = await res.json();
-			  const recent = data.messages.slice(-4); // last 2 exchanges (user+assistant)
-			  recent.forEach(msg => appendMessage(msg.role, msg.content));
-		}
+            try {
+                const res = await fetch('/memory/status');
+                const data = await res.json();
+                (data.messages || []).forEach(msg => {
+                    const role = msg.role === 'assistant' ? 'bot' : 'user';
+                    let content = msg.content || '';
+                    if (role === 'user' && content.includes("USER'S MESSAGE:")) {
+                        content = content.split("USER'S MESSAGE:").pop().trim();
+                    }
+                    if (content) addMsg(content, role);
+                });
+                msgs.scrollTop = msgs.scrollHeight;
+            } catch (e) {
+                console.error('[history]', e);
+            }
+        }
 
-		window.addEventListener('load', loadRecentHistory);
+        window.addEventListener('load', loadRecentHistory);
 
         input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
     </script>

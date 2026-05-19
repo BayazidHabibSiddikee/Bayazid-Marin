@@ -1182,7 +1182,7 @@
 		async function loadRecentHistory() {
 			  const res = await fetch('/memory/status');
 			  const data = await res.json();
-			  const recent = data.messages.slice(-4); // last 2 exchanges (user+assistant)
+			  const recent = data.messages.slice(-10); // last 5 exchanges (user+assistant)
 			  recent.forEach(msg => appendMessage(msg.role, msg.content));
 		}
 

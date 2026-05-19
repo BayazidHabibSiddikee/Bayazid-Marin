@@ -196,6 +196,12 @@ async def trigger_ai_move():
         "reaction": reaction
     }
 
+@app.get("/memory/status")
+async def memory_status():
+    from marin import load_history
+    messages = load_history(limit=10)
+    return {"messages": messages}
+
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5069)

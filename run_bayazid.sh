@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 
-# Run Bayazid server (main.py) on port 5070
+# Start Bayazid server on port 5070
 uvicorn main:app --host 0.0.0.0 --port 5070
