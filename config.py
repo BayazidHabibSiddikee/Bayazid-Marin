@@ -30,7 +30,7 @@ APPS: dict[str, list[str]] = {
     "atom":             ["atom"],
 
     # Terminals
-    "terminal":         ["gnome-terminal", "konsole", "xterm", "alacritty", "kitty", "tilix"],
+    "terminal":         ["ghostty", "konsole", "xterm", "alacritty", "kitty", "tilix"],
     "konsole":          ["konsole"],
     "alacritty":        ["alacritty"],
     "kitty":            ["kitty"],

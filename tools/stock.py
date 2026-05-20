@@ -30,7 +30,19 @@ def show_stock(ticker_symbol: str):
     try:
         obj = yf.Ticker(ticker_symbol)
         price = obj.info.get("regularMarketPrice")
-        name = obj.info.get("longName", ticker_symbol)
+        name  = obj.info.get("longName", ticker_symbol)
+
+        # Safety net: if yfinance returned an empty info dict the symbol might
+        # actually be a company name (e.g. user typed "tesla" with --ticker).
+        if price is None and not obj.info.get("symbol"):
+            print(f"[stock] --ticker {ticker_symbol!r} gave empty info — retrying as company name")
+            resolved = get_ticker(ticker_symbol)
+            if resolved and resolved.upper() != ticker_symbol.upper():
+                show_stock(resolved)
+                return
+            talk1(f"Could not retrieve price for {ticker_symbol}")
+            return
+
         if price is None:
             talk1(f"Could not retrieve price for {ticker_symbol}")
             return
