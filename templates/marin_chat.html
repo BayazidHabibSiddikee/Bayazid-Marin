@@ -284,11 +284,26 @@
             <p>Bayazid's AI girlfriend ♡</p>
         </div>
         <span class="vibe-badge" id="vibe">✨ lovely</span>
-        <div style="display:flex;gap:6px;margin-left:12px">
+        <div style="display:flex;gap:6px;margin-left:12px;align-items:center">
             <a href="http://localhost:5070/chat" style="font-family:monospace;font-size:.65rem;color:#8b5cf666;text-decoration:none;padding:3px 10px;border:1px solid #8b5cf622;border-radius:3px;transition:all .2s" onmouseover="this.style.color='#a78bfa';this.style.borderColor='#8b5cf6'" onmouseout="this.style.color='#8b5cf666';this.style.borderColor='#8b5cf622'">⚔ BAYAZID</a>
             <a href="http://localhost:5071/arena" style="font-family:monospace;font-size:.65rem;color:#fbbf2488;text-decoration:none;padding:3px 10px;border:1px solid #fbbf2433;border-radius:3px;transition:all .2s" onmouseover="this.style.color='#fbbf24';this.style.borderColor='#fbbf24'" onmouseout="this.style.color='#fbbf2488';this.style.borderColor='#fbbf2433'">⚡ ARENA</a>
+            <a href="/cmd/log" target="_blank" id="term-btn" style="font-family:monospace;font-size:.65rem;color:#22d3ee88;text-decoration:none;padding:3px 10px;border:1px solid #22d3ee33;border-radius:3px;transition:all .2s" onmouseover="this.style.color='#22d3ee';this.style.borderColor='#22d3ee'" onmouseout="this.style.color='#22d3ee88';this.style.borderColor='#22d3ee33'">⬛ TERMINAL</a>
+            <button id="word-limit-btn" onclick="toggleWordLimit()" style="font-family:monospace;font-size:.65rem;background:none;cursor:pointer;padding:3px 10px;border:1px solid #a3e63533;border-radius:3px;transition:all .2s;color:#a3e63588" title="Word limit">📏 <span id="wl-label">FREE</span></button>
+            <button id="voice-btn" onclick="toggleVoice()" style="font-family:monospace;font-size:.65rem;background:none;cursor:pointer;padding:3px 10px;border:1px solid #f4722433;border-radius:3px;transition:all .2s;color:#f4722444" title="Voice on/off">🔇 <span id="voice-label">OFF</span></button>
         </div>
     </header>
+
+    <!-- Word Limit Modal -->
+    <div id="wl-modal" style="display:none;position:fixed;inset:0;background:#0008;z-index:999;align-items:center;justify-content:center">
+        <div style="background:#1a0a12;border:1px solid #ff6b9d44;border-radius:12px;padding:24px;width:280px;text-align:center">
+            <p style="color:#ffb7c5;margin-bottom:12px;font-size:.9rem">Set Marin's word limit<br><span style="color:#ff6b9d88;font-size:.75rem">0 = no limit (she'll talk forever~)</span></p>
+            <input id="wl-input" type="number" min="0" max="2000" value="0" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ff6b9d44;background:#0d0006;color:#ffb7c5;font-size:1rem;text-align:center;margin-bottom:12px">
+            <div style="display:flex;gap:8px">
+                <button onclick="applyWordLimit()" style="flex:1;padding:8px;background:linear-gradient(135deg,#ffb7c5,#e91e8c);border:none;border-radius:8px;color:white;cursor:pointer;font-size:.85rem">Apply ♡</button>
+                <button onclick="document.getElementById('wl-modal').style.display='none'" style="flex:1;padding:8px;background:#1e0a14;border:1px solid #ff6b9d44;border-radius:8px;color:#ff6b9d88;cursor:pointer;font-size:.85rem">Cancel</button>
+            </div>
+        </div>
+    </div>
 
     <div id="messages"></div>
 
@@ -750,12 +765,88 @@
                     if (content) addMsg(content, role);
                 });
                 msgs.scrollTop = msgs.scrollHeight;
-            } catch (e) {
-                console.error('[history]', e);
+            } catch (e) { console.error('[history]', e); }
+        }
+
+        // ── Word limit ──────────────────────────────────────────────────────
+        let currentWordLimit = 0;
+
+        async function loadWordLimit() {
+            try {
+                const r = await fetch('/settings/wordlimit');
+                const d = await r.json();
+                currentWordLimit = d.word_limit || 0;
+                updateWLLabel();
+            } catch(e) {}
+        }
+
+        function updateWLLabel() {
+            const btn = document.getElementById('word-limit-btn');
+            const lbl = document.getElementById('wl-label');
+            if (currentWordLimit > 0) {
+                lbl.textContent = currentWordLimit + 'W';
+                btn.style.color = '#a3e635';
+                btn.style.borderColor = '#a3e63566';
+            } else {
+                lbl.textContent = 'FREE';
+                btn.style.color = '#a3e63588';
+                btn.style.borderColor = '#a3e63533';
             }
         }
 
-        window.addEventListener('load', loadRecentHistory);
+        function toggleWordLimit() {
+            document.getElementById('wl-input').value = currentWordLimit;
+            document.getElementById('wl-modal').style.display = 'flex';
+        }
+
+        async function applyWordLimit() {
+            const val = parseInt(document.getElementById('wl-input').value) || 0;
+            try {
+                const fd = new FormData(); fd.append('limit', val);
+                await fetch('/settings/wordlimit', { method: 'POST', body: fd });
+                currentWordLimit = val;
+                updateWLLabel();
+            } catch(e) {}
+            document.getElementById('wl-modal').style.display = 'none';
+        }
+
+        window.addEventListener('load', () => { loadRecentHistory(); loadWordLimit(); loadVoice(); });
+
+        // ── Voice toggle ────────────────────────────────────────────────────
+        let voiceOn = false;
+
+        async function loadVoice() {
+            try {
+                const r = await fetch('/settings/voice');
+                const d = await r.json();
+                voiceOn = d.voice_enabled || false;
+                updateVoiceLabel();
+            } catch(e) {}
+        }
+
+        function updateVoiceLabel() {
+            const btn = document.getElementById('voice-btn');
+            const lbl = document.getElementById('voice-label');
+            if (voiceOn) {
+                lbl.textContent = 'ON';
+                btn.textContent = '🔊 ON';
+                btn.style.color = '#f47224';
+                btn.style.borderColor = '#f4722466';
+            } else {
+                btn.textContent = '🔇 OFF';
+                btn.style.color = '#f4722444';
+                btn.style.borderColor = '#f4722433';
+            }
+        }
+
+        async function toggleVoice() {
+            voiceOn = !voiceOn;
+            try {
+                const fd = new FormData(); fd.append('enabled', voiceOn ? '1' : '0');
+                await fetch('/settings/voice', { method: 'POST', body: fd });
+            } catch(e) {}
+            updateVoiceLabel();
+        }
 
         input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
     </script>

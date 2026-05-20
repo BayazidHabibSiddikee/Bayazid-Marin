@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
-# tools/translate.py — Turtle Dictionary Translator, runs as its own process
-import os
-import sys
+# tools/translate.py — CLI Dictionary Translator
+# Usage: python translate.py --text "I love you" --to bn
+
+import sys, asyncio, argparse
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-_dn = os.open(os.devnull, os.O_WRONLY)
-_se = os.dup(2)
-os.dup2(_dn, 2)
-try:
-    import turtle as t
-finally:
-    os.dup2(_se, 2)
-    os.close(_se)
-    os.close(_dn)
 
 from utils.tts import speak_female
 
@@ -35,72 +26,41 @@ LANG_CODES = {
     "dutch":    "nl",
 }
 
+_LANG_NAMES = {v: k.title() for k, v in LANG_CODES.items()}
 
-class TurtleTranslator:
-    def __init__(self):
-        self.screen = t.Screen()
-        self.screen.setup(800, 600)
-        self.screen.bgcolor('light blue')
-        self.screen.title("Dictionary Translator")
-        self.writer = t.Turtle()
-        self.writer.hideturtle(); self.writer.up(); self.writer.speed(0)
-        self._draw_interface()
 
-    def _draw_interface(self):
-        self.writer.clear()
-        self.writer.goto(0, 250)
-        self.writer.write("Dictionary Translator", align="center", font=("Arial", 24, "bold"))
-        self.writer.goto(0, 200)
-        self.writer.write("Enter English text to translate", align="center", font=("Arial", 14, "normal"))
-        langs = ", ".join(sorted(LANG_CODES.keys()))
-        self.writer.goto(0, 150)
-        self.writer.write(langs, align="center", font=("Arial", 11, "normal"))
-        t.update()
-
-    def _speak(self, text: str, lang_code: str):
-        speak_female(text)
-
-    def _translate(self, text: str, dest: str) -> str:
+def translate_text(text: str, dest: str) -> str:
+    try:
+        from deep_translator import GoogleTranslator
+        result = GoogleTranslator(source='en', target=dest).translate(text)
+        return result if result else "Translation failed."
+    except ImportError:
         try:
-            from deep_translator import GoogleTranslator
-            result = GoogleTranslator(source='en', target=dest).translate(text)
-            return result if result else "Translation failed."
-        except ImportError:
-            try:
-                from googletrans import Translator
-                result = Translator().translate(text, dest=dest)
-                return result.text
-            except Exception:
-                return "Translation service unavailable."
-        except Exception as e:
-            return f"Error: {e}"
-
-    def run(self):
-        while True:
-            text = t.textinput("Input", "Enter English text (or 'quit'):")
-            if not text or text.lower() == 'quit':
-                break
-            lang = t.textinput("Language", "Target language:")
-            if not lang or lang.lower() == 'quit':
-                break
-            lang = lang.lower().strip()
-            if lang not in LANG_CODES:
-                self._draw_interface()
-                self.writer.goto(0, 50)
-                self.writer.write("Invalid language!", align="center", font=("Arial", 14, "normal"))
-                continue
-            self._draw_interface()
-            self.writer.goto(0, 50)
-            self.writer.write(f"English: {text}", align="center", font=("Arial", 14, "normal"))
-            translated = self._translate(text, LANG_CODES[lang])
-            self.writer.goto(0, 0)
-            self.writer.color("blue")
-            self.writer.write(f"{lang.title()}: {translated}", align="center", font=("Arial", 16, "bold"))
-            self.writer.color("black")
-            t.update()
-            self._speak(translated, LANG_CODES[lang])
-        t.bye()
+            from googletrans import Translator
+            result = Translator().translate(text, dest=dest)
+            if asyncio.iscoroutine(result):
+                result = asyncio.run(result)
+            return result.text
+        except Exception:
+            return "Translation service unavailable."
+    except Exception as e:
+        return f"Error: {e}"
 
 
 if __name__ == '__main__':
-    TurtleTranslator().run()
+    parser = argparse.ArgumentParser(description="Dictionary translator")
+    parser.add_argument('--text', type=str, required=True,
+                        help="English text to translate")
+    parser.add_argument('--to', type=str, required=True,
+                        help="Target language (e.g. bangla, french, bn, fr)")
+    args = parser.parse_args()
+
+    lang = args.to.lower().strip()
+    dest = LANG_CODES.get(lang, lang)
+    lang_name = _LANG_NAMES.get(dest, lang.title())
+
+    print(f"\u2192 Translating to [{lang_name}]")
+    translated = translate_text(args.text, dest)
+    print(f"English: {args.text}")
+    print(f"{lang_name}: {translated}")
+    speak_female(translated)

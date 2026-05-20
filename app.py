@@ -199,8 +199,48 @@ async def trigger_ai_move():
 @app.get("/memory/status")
 async def memory_status():
     from marin import load_history
-    messages = load_history(limit=10)
+    messages = load_history(limit=60)
     return {"messages": messages}
+
+@app.get("/settings/wordlimit")
+async def get_wordlimit():
+    import marin
+    return {"word_limit": marin.WORD_LIMIT}
+
+@app.post("/settings/wordlimit")
+async def set_wordlimit(limit: int = Form(...)):
+    import marin
+    marin.WORD_LIMIT = max(0, limit)
+    return {"word_limit": marin.WORD_LIMIT}
+
+@app.get("/settings/voice")
+async def get_voice():
+    import marin
+    return {"voice_enabled": marin.VOICE_ENABLED}
+
+@app.post("/settings/voice")
+async def set_voice(enabled: str = Form(...)):
+    import marin
+    marin.VOICE_ENABLED = enabled in ("1", "true", "True", "yes")
+    return {"voice_enabled": marin.VOICE_ENABLED}
+
+@app.get("/cmd/log")
+async def cmd_log_page(request: Request):
+    try:
+        from marin_fier import _cmd_log
+        logs = list(reversed(_cmd_log))
+    except ImportError:
+        logs = []
+    return templates.TemplateResponse(request=request, name="terminal_log.html",
+                                      context={"logs": logs})
+
+@app.get("/cmd/log/json")
+async def cmd_log_json():
+    try:
+        from marin_fier import _cmd_log
+        return {"logs": list(reversed(_cmd_log))}
+    except ImportError:
+        return {"logs": []}
 
 if __name__ == '__main__':
     import uvicorn

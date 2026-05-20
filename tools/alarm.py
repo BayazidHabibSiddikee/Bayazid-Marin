@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # tools/alarm.py — runs as its own process
-# Usage: python alarm.py "set an alarm for 7:30 a.m."
-import os
-import sys
-import time
+# Usage: python alarm.py --time "05:00"   OR   python alarm.py --time "7:30 AM"
+
+import os, sys, time, argparse
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -20,37 +19,39 @@ finally:
     os.close(_dn)
 
 
-def parse_alarm(inp: str) -> str:
-    inp = inp.lower()
-    p1 = inp.find("alarm for")
-    p_a = inp.find("a.m.")
-    p_p = inp.find("p.m.")
-    p_c = inp.find(":")
-
-    base = inp[p1 + len("alarm for"):].strip() if p1 != -1 else inp
-
-    if p_a != -1 and p_c != -1:
-        t = inp[p1 + len("alarm for") + 1:p_a].strip() + " AM"
-    elif p_p != -1 and p_c != -1:
-        t = inp[p1 + len("alarm for") + 1:p_p].strip() + " PM"
-    elif p_a != -1:
-        t = inp[p1 + len("alarm for") + 1:p_a].strip() + ":00 AM"
-    elif p_p != -1:
-        t = inp[p1 + len("alarm for") + 1:p_p].strip() + ":00 PM"
-    else:
+def normalize_time(time_str: str) -> str:
+    t = time_str.strip()
+    try:
+        if t.lower().endswith("am") or t.lower().endswith("pm"):
+            return arrow.get(t, "h:mm A").format("h:mm A")
+        if ":" in t:
+            parts = t.split(":")
+            h, m = int(parts[0]), int(parts[1])
+            ampm = "AM" if h < 12 else "PM"
+            if h == 0: h = 12
+            if h > 12: h -= 12
+            return f"{h}:{m:02d} {ampm}"
         return ""
-    return t.strip()
+    except Exception:
+        return ""
 
 
-def run_alarm(inp: str):
-    alarm_time = parse_alarm(inp)
+def run_alarm(time_str: str):
+    alarm_time = normalize_time(time_str)
     if not alarm_time:
         print("SPEAK: Could not understand alarm time.")
         sys.exit(1)
 
+    print(f"\u2192 Setting alarm for [{alarm_time}]")
     print(f"SPEAK: Alarm set for {alarm_time}.")
     sys.stdout.flush()
 
+    # Fork to background so terminal isn't locked
+    pid = os.fork()
+    if pid > 0:
+        sys.exit(0)
+
+    # Child continues in background
     while True:
         now = arrow.now().format('h:mm A')
         if alarm_time.strip() == now.strip():
@@ -75,7 +76,8 @@ def run_alarm(inp: str):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("SPEAK: No alarm command provided.")
-        sys.exit(1)
-    run_alarm(' '.join(sys.argv[1:]))
+    parser = argparse.ArgumentParser(description="Set a clock alarm")
+    parser.add_argument('--time', type=str, required=True,
+                        help='Alarm time (e.g. "05:00" or "7:30 AM")')
+    args = parser.parse_args()
+    run_alarm(args.time)

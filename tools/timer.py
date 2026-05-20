@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # tools/timer.py — runs as its own process
-# Usage: python timer.py "timer for 1 hour 30 minutes"
-import os
-import sys
-import time
+# Usage: python timer.py --duration 300   (300 seconds = 5 minutes)
+
+import os, sys, time, argparse
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -20,38 +19,29 @@ finally:
     os.close(_dn)
 
 
-def parse_command(inp: str):
-    inp = inp.lower()
-    p1 = inp.find('timer for')
-    p_h = inp.find('hour')
-    p_m = inp.find('minute')
+def format_duration(seconds: int) -> str:
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    parts = []
+    if h: parts.append(f"{h} hour(s)")
+    if m: parts.append(f"{m} minute(s)")
+    if s: parts.append(f"{s} second(s)")
+    return " ".join(parts) if parts else "0 seconds"
 
-    if p_h == -1 and p_m == -1:
-        print("SPEAK: Could not understand timer command.")
+
+def run_timer(duration_seconds: int):
+    if duration_seconds <= 0:
+        print("SPEAK: Invalid duration.")
         sys.exit(1)
 
-    addhour = 0
-    addmin = 0
-
-    if p_h != -1 and p_m == -1:
-        addhour = int(inp[p1 + len('timer for'):p_h].strip() or 0)
-    elif p_h == -1 and p_m != -1:
-        addmin = int(inp[p1 + len('timer for'):p_m].strip() or 0)
-    else:
-        addhour = int(inp[p1 + len('timer for'):p_h].strip() or 0)
-        addmin  = int(inp[p_h + len('hour'):p_m].strip() or 0)
-
-    return addhour, addmin
-
-
-def run_timer(inp: str):
-    addhour, addmin = parse_command(inp)
+    label = format_duration(duration_seconds)
     now = arrow.now()
-    target = now.shift(hours=addhour, minutes=addmin)
+    target = now.shift(seconds=duration_seconds)
     end_str = target.format('H:m:s')
 
-    print(f"SPEAK: Timer set for {addhour} hour(s) and {addmin} minute(s). "
-          f"Goes off at {target.format('h:mm A')}.")
+    print(f"\u2192 Starting timer for [{label}]")
+    print(f"SPEAK: Timer set for {label}. Goes off at {target.format('h:mm A')}.")
     sys.stdout.flush()
 
     while True:
@@ -77,7 +67,8 @@ def run_timer(inp: str):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("SPEAK: No timer command provided.")
-        sys.exit(1)
-    run_timer(' '.join(sys.argv[1:]))
+    parser = argparse.ArgumentParser(description="Countdown timer")
+    parser.add_argument('--duration', type=int, required=True,
+                        help='Duration in seconds (e.g. 300 = 5 minutes)')
+    args = parser.parse_args()
+    run_timer(args.duration)

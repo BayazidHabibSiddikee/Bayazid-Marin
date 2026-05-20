@@ -57,8 +57,66 @@ class Connect4Input(BaseModel):
         description="'computer' for AI opponent, 'two' for two-player mode"
     )
 
+class CmdInput(BaseModel):
+    command: str = Field(description="Shell command to run, e.g. 'ls -la', 'git status', 'python3 --version'")
+
 class NoInput(BaseModel):
     pass   # tools that need no parameters
+
+
+# ── COMMAND ALLOWLIST ─────────────────────────────────────────────────────────
+_CMD_ALLOW = re.compile(
+    r'^(ls|cat|pwd|echo|whoami|date|uptime|df|du|free|uname|hostname|'
+    r'ps|git|python3?|pip3?|mkdir|touch|cp|mv|find|grep|head|tail|wc|'
+    r'sort|uniq|cut|awk|sed|tr|curl|wget|make|gcc|g\+\+|avr-gcc|avrdude|'
+    r'tree|which|type|env|printenv|lsusb|lsblk|ip|ping|ollama|uvicorn|'
+    r'node|npm|cargo|rustc|systemctl|journalctl|ffmpeg)',
+    re.IGNORECASE
+)
+_CMD_BLOCK = re.compile(
+    r'(rm\s+-rf\s*/|sudo\s+rm|dd\s+if=|mkfs|shutdown|reboot|passwd|'
+    r'useradd|userdel|wget.+\|\s*bash|curl.+\|\s*sh|>\s*/dev/sd|nc\s+-e|bash\s+-i)',
+    re.IGNORECASE
+)
+
+_cmd_log: list[dict] = []   # in-memory log (last 100), served at /cmd/log
+
+
+def is_cmd_allowed(cmd: str) -> tuple[bool, str]:
+    first = cmd.strip().split()[0].lstrip('./') if cmd.strip() else ""
+    if _CMD_BLOCK.search(cmd):
+        return False, "dangerous pattern blocked"
+    if not _CMD_ALLOW.match(first):
+        return False, f"'{first}' not in allowlist"
+    return True, "ok"
+
+
+def tool_run_command(command: str) -> str:
+    import datetime
+    allowed, reason = is_cmd_allowed(command)
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    entry = {"cmd": command, "allowed": allowed, "output": "", "ts": ts}
+    if not allowed:
+        entry["output"] = reason
+        _cmd_log.append(entry)
+        if len(_cmd_log) > 100: _cmd_log.pop(0)
+        return f"Can't run `{command}` — {reason}."
+    try:
+        r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
+        out = (r.stdout or r.stderr or "(no output)").strip()
+        if len(out) > 1500: out = out[:1500] + "\n...[truncated]"
+        entry["output"] = out
+        _cmd_log.append(entry)
+        if len(_cmd_log) > 100: _cmd_log.pop(0)
+        return out
+    except subprocess.TimeoutExpired:
+        entry["output"] = "timed out (15s)"
+        _cmd_log.append(entry)
+        return "Command timed out after 15 seconds."
+    except Exception as e:
+        entry["output"] = str(e)
+        _cmd_log.append(entry)
+        return f"Error: {e}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -205,6 +263,14 @@ TOOLS = [
         func=tool_take_screenshot, name="take_screenshot",
         description="Take a screenshot.",
         args_schema=NoInput,
+    ),
+    StructuredTool.from_function(
+        func=tool_run_command, name="run_command",
+        description=(
+            "Execute an allowlisted shell/terminal command on Limon's machine. "
+            "Use when asked to run ls, git status, python scripts, check system info, etc."
+        ),
+        args_schema=CmdInput,
     ),
 ]
 
@@ -364,12 +430,18 @@ _TTT_PAT   = re.compile(r'\b(tic\s*tac\s*toe|tiktaktoe|tictactoe)\b')
 _C4_PAT    = re.compile(r'\b(connect\s*4|connect\s*four|connect4)\b')
 _WORD_PAT  = re.compile(r'\b(word\s*game|wordgame|word\s*scramble)\b')
 _DRAW_PAT  = re.compile(r'\b(draw\s+me|take\s+(?:my\s+)?photo\s+and\s+draw)\b')
-_SHOT_PAT  = re.compile(r'\b(screenshot|take\s+a\s*(?:pic|screen))\b')
+_SHOT_PAT   = re.compile(r'\b(screenshot|take\s+a\s*(?:pic|screen))\b')
+_ALL_PAT    = re.compile(r'\b(use\s+(?:every|all)\s+(?:tool|command|ability)|run\s+(?:every|all)\s+(?:tool|command)|show\s+(?:everything|all\s+tools))\b')
+_RUN_PAT    = re.compile(r'\b(run\s+(?:this\s+)?(?:command|script)|execute\s+command)\b|^[a-z_\-]+\s+[\-a-z0-9\./]')
 
 
 def _regex_stage(text: str) -> dict | None:
     """Returns {intent, params, confidence} or None if uncertain."""
     lower = text.lower()
+
+    # "use every tool" / "run all tools" → special batch intent
+    if _ALL_PAT.search(lower):
+        return {"intent": "run_all_tools", "params": {}, "confidence": 0.97}
 
     # Crypto BEFORE stock — so 'ethereum stock price' → crypto
     if _is_crypto_text(lower):
@@ -424,6 +496,12 @@ def _regex_stage(text: str) -> dict | None:
 
     if _SHOT_PAT.search(lower):
         return {"intent": "take_screenshot", "params": {}, "confidence": 0.97}
+
+    # Explicit run/execute command
+    if _RUN_PAT.search(lower):
+        m = re.search(r'(?:run|execute)\s+(?:command\s*:?\s*)?(.+)', lower)
+        cmd = m.group(1).strip() if m else text.strip()
+        return {"intent": "run_command", "params": {"command": cmd}, "confidence": 0.90}
 
     return None
 
@@ -515,7 +593,7 @@ def _detect_vibe(text: str) -> str:
 # PUBLIC API
 # ══════════════════════════════════════════════════════════════════════════════
 
-_KNOWN_TOOLS = set(_TOOL_MAP.keys())
+_KNOWN_TOOLS = set(_TOOL_MAP.keys()) | {"run_all_tools"}
 
 def classify(text: str) -> dict:
     """

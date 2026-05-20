@@ -45,6 +45,13 @@ IMAGE_DIR = os.path.join(os.getcwd(), "static", "uploads")
 GEN_DIR   = os.path.join(os.getcwd(), "static", "generated")
 VOICE_PATH = os.path.expanduser("~/.piper-voices/en_US-amy-medium.onnx")
 
+# ── Toggleable settings (changed at runtime via /settings/* routes) ───────────
+WORD_LIMIT:    int  = 0     # 0 = unlimited
+VOICE_ENABLED: bool = False # False = voice off by default
+
+# Word limit — 0 = unlimited. Set via /settings/wordlimit
+WORD_LIMIT: int = 0
+
 os.makedirs(GEN_DIR, exist_ok=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -115,27 +122,20 @@ When RELEVANT BOOK CONTEXT is provided, use it naturally in your response.
 Cite sources like: "According to [Book Name]..."
 """
 
-GAME_RESPONSES: dict = {}   # kept for compatibility
-
-def launch_tool(intent: str, params: dict) -> tuple[bool, str]:
-    """
-    Delegate to marin_fier.execute_tool (which uses StructuredTool).
-    Returns (launched: bool, tool_context: str) for injection into Marin's prompt.
-    """
-    try:
-        from marin_fier import execute_tool
-        result = execute_tool(intent, params)
-        if result is None:
-            return False, ""
-        return True, result
-    except Exception as e:
-        return True, f"Tool {intent} encountered an error: {e}"
+GAME_RESPONSES = {
+    "tictactoe_start": "Ooh, Tic Tac Toe? 🎮 I accept your challenge, Limon~ Don't cry when I win! Hehehe~ ♡",
+    "tictactoe_move":  None,
+    "tictactoe_quit":  "Aww, giving up already? 😏 Fine, I'll let you off this time~ ♡",
+}
 
 
 def get_character_prompt(user_vibe: str = "neutral") -> str:
     """Return the full character system prompt with vibe modifier applied."""
     modifier = VIBE_MODIFIERS.get(user_vibe, "")
-    return BASE_CHARACTER + modifier
+    limit_note = ""
+    if WORD_LIMIT > 0:
+        limit_note = f"\n[RESPONSE LIMIT: Keep your reply under {WORD_LIMIT} words. Be concise but still warm.]"
+    return BASE_CHARACTER + modifier + limit_note
 
 
 # ── Register custom modelfile with Ollama (run once at startup) ───────────────
@@ -449,27 +449,44 @@ def structured_response(question: str, mode: str, rag_context: str = ""):
 # ═══════════════════════════════════════════════════════════════════════════════
 async def preprocess_user_input(user_input: str, image_path: str = None) -> tuple:
     classification = classify(user_input)
+    print(
+        f"[Classifier] intent={classification['intent']}, "
+        f"user_vibe={classification.get('user_vibe','neutral')}, "
+        f"conf={classification.get('confidence',0):.2f}"
+    )
 
-    intent = classification["intent"]
+    if classification["intent"] in GAME_RESPONSES and classification.get("confidence", 0) >= 0.5:
+        return (GAME_RESPONSES[classification["intent"]], classification)
+
+    # ── Execute tool(s) if detected ───────────────────────────────────────────
+    tool_outputs = []
+    intent = classification.get("intent", "chat")
     params = classification.get("params", {})
 
-    # ── Tool path: launch subprocess, build context, let Marin reply naturally ──
-    launched, tool_context = launch_tool(intent, params)
-    if launched:
-        classification["_rag_context"] = ""
-        classification["_tool_context"] = tool_context
-        # Build prompt so Marin replies *as herself* about what she just did
-        tool_prompt = (
-            f"[TOOL EXECUTED]\n"
-            f"{tool_context}\n\n"
-            f"The user said: \"{user_input}\"\n\n"
-            f"Respond naturally as Marin — acknowledge what you just did, "
-            f"be your usual warm/playful self, and comment on the tool/result. "
-            f"Keep it short and in character."
-        )
-        return (tool_prompt, classification)
+    if intent == "run_all_tools":
+        from marin_fier import execute_tool
+        batch = [
+            ("run_command", {"command": "ls -la"}),
+            ("run_command", {"command": "df -h"}),
+            ("run_command", {"command": "git status"}),
+            ("run_command", {"command": "python3 --version"}),
+            ("run_command", {"command": "ollama list"}),
+        ]
+        for t_name, t_params in batch:
+            try:
+                out = execute_tool(t_name, t_params)
+                if out: tool_outputs.append(f"[{t_params.get('command', t_name)}]\n{out}")
+            except Exception as e:
+                tool_outputs.append(f"[{t_name}] failed: {e}")
 
-    # ── Normal chat path ────────────────────────────────────────────────────────
+    elif intent not in ("chat", "normal", "learn", "code", "lab") and intent not in GAME_RESPONSES:
+        try:
+            from marin_fier import execute_tool
+            out = execute_tool(intent, params)
+            if out: tool_outputs.append(f"[TOOL: {intent}]\n{out}")
+        except Exception as e:
+            print(f"[Tool] execute failed: {e}")
+
     yt_regex   = r"(https?://)?(www.)?(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)[^\s]+"
     is_youtube = bool(re.search(yt_regex, user_input, re.IGNORECASE))
     is_image   = bool(image_path)
@@ -488,13 +505,13 @@ async def preprocess_user_input(user_input: str, image_path: str = None) -> tupl
             )
 
     parts = []
-    if rag_context:  parts.append(rag_context)
-    if media_blocks: parts.append("CONTEXT FROM MEDIA:\n" + "\n".join(media_blocks))
+    if rag_context:   parts.append(rag_context)
+    if media_blocks:  parts.append("CONTEXT FROM MEDIA:\n" + "\n".join(media_blocks))
+    if tool_outputs:  parts.append("TOOL EXECUTION RESULTS:\n" + "\n\n".join(tool_outputs))
     parts.append(f"USER'S MESSAGE: {user_input}")
 
     enriched_prompt = "\n\n".join(parts)
     classification["_rag_context"] = rag_context
-    classification["_tool_context"] = ""
     return (enriched_prompt, classification)
 
 
@@ -525,7 +542,7 @@ def response(
         yield "__VIBE__neutral"
         return
 
-    history   = load_history(limit=50)
+    history   = load_history(limit=30)
     character = get_character_prompt(user_vibe)
     messages  = [{"role": "system", "content": character}]
     messages.extend(history)
@@ -561,19 +578,14 @@ async def main(prompt: str, image_path: str = None, game_context: str = None):
     enriched_prompt, classification = await preprocess_user_input(
         prompt, image_path=image_path
     )
-    is_tool_response = bool(classification.get("_tool_context"))
-    # Tools still go through the LLM (Marin replies naturally).
-    # Only game canned responses truly bypass the LLM.
     is_game_response = (
         classification["intent"] in GAME_RESPONSES
         and classification.get("confidence", 0) >= 0.5
-        and not is_tool_response
     )
-    is_canned = is_game_response   # tools are NO LONGER canned
 
     audio_proc = None
     try:
-        if os.path.exists(VOICE_PATH):
+        if VOICE_ENABLED and not is_game_response and os.path.exists(VOICE_PATH):
             cmd = (
                 f"piper-tts --model {VOICE_PATH} --output_raw "
                 "| aplay -r 22050 -f S16_LE -t raw"
@@ -588,12 +600,11 @@ async def main(prompt: str, image_path: str = None, game_context: str = None):
         print(f"[Audio] Skipping: {e}")
 
     split_marks = [".", "!", "?", "\n", ",", ";", ":"]
-    _canned_text = GAME_RESPONSES.get(classification["intent"]) if is_game_response else None
     gen = response(
         enriched_prompt,
         user_vibe=classification.get("user_vibe", "neutral"),
-        use_canned=is_canned,
-        canned_response=_canned_text,
+        use_canned=is_game_response,
+        canned_response=GAME_RESPONSES.get(classification["intent"]),
         game_context=game_context,
         intent=classification.get("intent", "normal"),
         rag_context=classification.get("_rag_context", ""),

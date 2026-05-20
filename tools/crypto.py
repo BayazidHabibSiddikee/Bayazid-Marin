@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# media/crypto.py — Live crypto price tracker, runs as its own process
-# Usage: python crypto.py bitcoin
+# tools/crypto.py — Live crypto price tracker, runs as its own process
+# Usage: python crypto.py --coin ethereum
 
-import sys
+import sys, argparse
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -17,6 +17,7 @@ HEADERS = {
 
 
 def run(currency: str = "bitcoin"):
+    print(f"\u2192 Fetching market price for [{currency.title()}]")
     url = (f"https://api.coingecko.com/api/v3/simple/price"
            f"?ids={currency}&vs_currencies=usd")
     root = tk.Tk()
@@ -48,5 +49,8 @@ def run(currency: str = "bitcoin"):
 
 
 if __name__ == '__main__':
-    currency = sys.argv[1] if len(sys.argv) > 1 else "bitcoin"
-    run(currency)
+    parser = argparse.ArgumentParser(description="Live crypto price tracker")
+    parser.add_argument('--coin', type=str, default="bitcoin",
+                        help="Coin id: bitcoin, ethereum, solana, etc.")
+    args = parser.parse_args()
+    run(args.coin.lower().strip())

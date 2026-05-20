@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 # tools/image.py — takes screenshot and converts to stencil
 # Works on Linux via maim + convert
-from PIL import Image, ImageDraw
-import os, time, subprocess, sys
+# Usage: python image.py --prompt "Starry Night"
 
-def capture_and_draw():
+import sys, argparse
+from PIL import Image, ImageDraw
+import os, time, subprocess
+
+
+def capture_and_draw(prompt: str = "Screenshot"):
+    print(f"\u2192 Generating image of [{prompt}]")
     scale = 0.8
     threshold = 128
 
-    # Linux: use maim for screenshot
     screenshot_path = "/tmp/marin_screenshot.png"
     try:
         subprocess.run(["maim", "-s", screenshot_path], check=True)
@@ -31,5 +35,10 @@ def capture_and_draw():
 
     im.show()
 
+
 if __name__ == "__main__":
-    capture_and_draw()
+    parser = argparse.ArgumentParser(description="Screenshot to stencil art")
+    parser.add_argument('--prompt', type=str, default="Screenshot",
+                        help="Label for what's being captured")
+    args = parser.parse_args()
+    capture_and_draw(args.prompt)
