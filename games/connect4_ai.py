@@ -141,5 +141,13 @@ class ConnectFour:
 
 
 if __name__ == '__main__':
-    talk("Starting Connect Four against computer!")
-    ConnectFour().start()
+    _dn = os.open(os.devnull, os.O_WRONLY)
+    _se = os.dup(2)
+    os.dup2(_dn, 2)
+    try:
+        from utils.tts import speak_male as talk
+        ConnectFour().start()
+    finally:
+        os.dup2(_se, 2)
+        os.close(_se)
+        os.close(_dn)

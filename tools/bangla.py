@@ -5,58 +5,23 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Suppress ALSA noise
-_dn = os.open(os.devnull, os.O_WRONLY)
-_se = os.dup(2)
-os.dup2(_dn, 2)
-try:
-    import speech_recognition as sr
-finally:
-    os.dup2(_se, 2)
-    os.close(_se)
-    os.close(_dn)
+from utils.tts import speak_female
 
-import pyttsx3
 from datetime import datetime
 
 
 class BanglaVoiceTranslator:
-    def __init__(self):
-        self.speech = sr.Recognizer()
-        self.engine = pyttsx3.init()
-        self.engine.setProperty('rate', 140)
-        self.engine.setProperty('volume', 0.9)
-        # Try to set a Bangla-compatible voice if available
-        try:
-            voices = self.engine.getProperty('voices')
-            for v in voices:
-                if 'bn' in v.languages or 'bengali' in v.name.lower():
-                    self.engine.setProperty('voice', v.id)
-                    break
-        except Exception:
-            pass
-
     def speak(self, text: str):
-        print(f"[Reply] {text}")
-        try:
-            self.engine.say(text)
-            self.engine.runAndWait()
-        except Exception as e:
-            print(f"[TTS] {e}")
+        speak_female(text)
 
     def listen(self) -> str | None:
-        print("Listening in Bangla...")
         try:
-            with sr.Microphone() as source:
-                self.speech.adjust_for_ambient_noise(source, duration=1)
-                audio = self.speech.listen(source, timeout=6)
-                text = self.speech.recognize_google(audio, language="bn")
+            text = input("Bangla input: ").strip()
+            if text:
                 print(f"[Bangla] {text}")
                 return text
-        except (sr.WaitTimeoutError, sr.UnknownValueError):
-            self.speak("I didn't catch that. Please try again.")
-        except sr.RequestError:
-            self.speak("Speech recognition service error.")
+        except EOFError:
+            pass
         return None
 
     def translate(self, bangla_text: str) -> str | None:
@@ -97,7 +62,7 @@ class BanglaVoiceTranslator:
         return f"I heard: {text}. I'm still learning!"
 
     def run(self):
-        self.speak("Bangla voice translator is ready. Please speak in Bangla.")
+        self.speak("Bangla voice translator is ready. Type in Bangla to begin.")
         while True:
             bangla = self.listen()
             if not bangla:

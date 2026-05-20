@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Suppress ALSA noise
 _dn = os.open(os.devnull, os.O_WRONLY)
 _se = os.dup(2)
 os.dup2(_dn, 2)
@@ -16,7 +15,7 @@ finally:
     os.close(_se)
     os.close(_dn)
 
-import pyttsx3
+from utils.tts import speak_female
 
 LANG_CODES = {
     "english":  "en",
@@ -45,8 +44,6 @@ class TurtleTranslator:
         self.screen.title("Dictionary Translator")
         self.writer = t.Turtle()
         self.writer.hideturtle(); self.writer.up(); self.writer.speed(0)
-        self._tts_engine = pyttsx3.init()
-        self._tts_engine.setProperty('rate', 140)
         self._draw_interface()
 
     def _draw_interface(self):
@@ -61,18 +58,7 @@ class TurtleTranslator:
         t.update()
 
     def _speak(self, text: str, lang_code: str):
-        try:
-            voices = self._tts_engine.getProperty('voices')
-            if voices:
-                # Try to find a voice for the target language
-                for v in voices:
-                    if lang_code[:2] in v.languages or lang_code[:2] in v.id.lower():
-                        self._tts_engine.setProperty('voice', v.id)
-                        break
-            self._tts_engine.say(text)
-            self._tts_engine.runAndWait()
-        except Exception as e:
-            print(f"[TTS] {e}")
+        speak_female(text)
 
     def _translate(self, text: str, dest: str) -> str:
         try:
@@ -85,7 +71,7 @@ class TurtleTranslator:
                 result = Translator().translate(text, dest=dest)
                 return result.text
             except Exception:
-                return "Translation service unavailable. Install deep-translator: pip install deep-translator"
+                return "Translation service unavailable."
         except Exception as e:
             return f"Error: {e}"
 

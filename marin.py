@@ -121,6 +121,109 @@ GAME_RESPONSES = {
     "tictactoe_quit":  "Aww, giving up already? 😏 Fine, I'll let you off this time~ ♡",
 }
 
+# ── Tool intents that launch a subprocess ────────────────────────────────────
+# Maps intent → (script_path_relative_to_BASE_DIR, arg_extractor_fn_or_None)
+# arg_extractor receives the raw user input and returns a list of str args.
+
+def _alarm_args(text: str):
+    return [text]
+
+def _timer_args(text: str):
+    return [text]
+
+def _crypto_args(text: str):
+    coins = [
+        "bitcoin","ethereum","bnb","solana","dogecoin",
+        "cardano","ripple","litecoin","polkadot",
+    ]
+    lower = text.lower()
+    for c in coins:
+        if c in lower:
+            return [c]
+    return ["bitcoin"]
+
+def _stock_args(text: str):
+    lower = text.lower()
+    for filler in [
+        "stock price of","stock of","price of","share price of",
+        "check","what is the","show me",
+    ]:
+        lower = lower.replace(filler, "")
+    return [lower.strip() or "Apple"]
+
+def _news_args(text: str):
+    return []        # news.py takes no args
+
+def _email_args(text: str):
+    return []        # email_tool.py is fully interactive
+
+def _connect4_args(text: str):
+    lower = text.lower()
+    # "vs computer" / "against computer" → AI mode; anything else → 2-player
+    if any(k in lower for k in ["computer","ai","vs computer","single"]):
+        return []    # default is AI mode
+    return ["--two"]
+
+def _game_no_args(text: str):
+    return []
+
+
+# ── Tool registry ─────────────────────────────────────────────────────────────
+# intent: (script_relative_path, arg_fn, spoken_ack)
+TOOL_DISPATCH: dict[str, tuple] = {
+    # ── system tools ──────────────────────────────────────────────────────────
+    "alarm":          ("tools/alarm.py",       _alarm_args,
+                       "Setting your alarm, Limon~ ⏰"),
+    "timer":          ("tools/timer.py",        _timer_args,
+                       "Timer started! I'll let you know when it's up~ ⏱️"),
+    "crypto":         ("tools/crypto.py",       _crypto_args,
+                       "Opening crypto tracker~ 📈"),
+    "stock":          ("tools/stock.py",        _stock_args,
+                       "Pulling up the stock chart~ 📊"),
+    "news":           ("tools/news.py",         _news_args,
+                       "Opening the news for you~ 📰"),
+    "email":          ("tools/email_tool.py",   _email_args,
+                       "Let's compose that email~ ✉️"),
+
+    # ── games ─────────────────────────────────────────────────────────────────
+    "tictactoe_start":("tools/tictactoe.py",     _game_no_args,
+                       "Tic Tac Toe is launching~ 🎮 Don't cry when you lose! Hehehe~"),
+    "play_connect4":  ("tools/connect4.py",      _connect4_args,
+                       "Connect Four is opening~ 🔴🟡 Get ready to lose!"),
+    "play_wordgame":  ("tools/wordgame.py",      _game_no_args,
+                       "Word game is starting~ 🔤 Let's see how big your vocabulary is!"),
+}
+
+
+def launch_tool(intent: str, user_input: str) -> str | None:
+    """
+    Fire-and-forget: spawns the tool subprocess and returns a spoken ack string,
+    or None if the intent isn't a known tool.
+    """
+    if intent not in TOOL_DISPATCH:
+        return None
+
+    script_rel, arg_fn, ack = TOOL_DISPATCH[intent]
+    script_path = os.path.join(BASE_DIR, script_rel)
+
+    if not os.path.exists(script_path):
+        return (
+            f"Hmm, I can't find the tool at {script_path}. "
+            f"Make sure tools/{script_rel.split('/')[-1]} exists!"
+        )
+
+    args = arg_fn(user_input) if arg_fn else []
+    try:
+        subprocess.Popen(
+            [sys.executable, script_path] + args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,   # fully detach — game windows stay open
+        )
+    except Exception as e:
+        return f"Couldn't launch {intent}: {e}"
+    return ack
+
 
 def get_character_prompt(user_vibe: str = "neutral") -> str:
     """Return the full character system prompt with vibe modifier applied."""
@@ -445,6 +548,15 @@ async def preprocess_user_input(user_input: str, image_path: str = None) -> tupl
         f"conf={classification.get('confidence',0):.2f}"
     )
 
+    # ── Tool intents (games, alarm, timer, crypto, stock, news, email) ─────────
+    # Games go through TOOL_DISPATCH first (launches subprocess), then fall back
+    # to GAME_RESPONSES for the spoken ack only if the script is missing.
+    tool_ack = launch_tool(classification["intent"], user_input)
+    if tool_ack is not None:
+        classification["_rag_context"] = ""
+        return (tool_ack, classification)
+
+    # Canned-only game responses (fallback when tool script is absent)
     if classification["intent"] in GAME_RESPONSES and classification.get("confidence", 0) >= 0.5:
         return (GAME_RESPONSES[classification["intent"]], classification)
 
@@ -502,7 +614,7 @@ def response(
         yield "__VIBE__neutral"
         return
 
-    history   = load_history(limit=30)
+    history   = load_history(limit=50)
     character = get_character_prompt(user_vibe)
     messages  = [{"role": "system", "content": character}]
     messages.extend(history)
@@ -542,10 +654,12 @@ async def main(prompt: str, image_path: str = None, game_context: str = None):
         classification["intent"] in GAME_RESPONSES
         and classification.get("confidence", 0) >= 0.5
     )
+    is_tool_response = classification["intent"] in TOOL_DISPATCH
+    is_canned = is_game_response or is_tool_response
 
     audio_proc = None
     try:
-        if not is_game_response and os.path.exists(VOICE_PATH):
+        if not is_canned and os.path.exists(VOICE_PATH):
             cmd = (
                 f"piper-tts --model {VOICE_PATH} --output_raw "
                 "| aplay -r 22050 -f S16_LE -t raw"
@@ -560,11 +674,17 @@ async def main(prompt: str, image_path: str = None, game_context: str = None):
         print(f"[Audio] Skipping: {e}")
 
     split_marks = [".", "!", "?", "\n", ",", ";", ":"]
+    # Determine the canned text: game dict or tool ack (already stored in enriched_prompt by preprocess)
+    _canned_text = (
+        GAME_RESPONSES.get(classification["intent"])
+        if is_game_response
+        else enriched_prompt   # for tools, enriched_prompt IS the ack string
+    )
     gen = response(
         enriched_prompt,
         user_vibe=classification.get("user_vibe", "neutral"),
-        use_canned=is_game_response,
-        canned_response=GAME_RESPONSES.get(classification["intent"]),
+        use_canned=is_canned,
+        canned_response=_canned_text,
         game_context=game_context,
         intent=classification.get("intent", "normal"),
         rag_context=classification.get("_rag_context", ""),
