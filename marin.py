@@ -11,6 +11,7 @@ import os
 import sys
 import asyncio
 import subprocess
+import threading
 import re
 from datetime import datetime
 from typing import Optional, AsyncIterator
@@ -48,9 +49,6 @@ VOICE_PATH = os.path.expanduser("~/.piper-voices/en_US-amy-medium.onnx")
 # ── Toggleable settings (changed at runtime via /settings/* routes) ───────────
 WORD_LIMIT:    int  = 0     # 0 = unlimited
 VOICE_ENABLED: bool = False # False = voice off by default
-
-# Word limit — 0 = unlimited. Set via /settings/wordlimit
-WORD_LIMIT: int = 0
 
 os.makedirs(GEN_DIR, exist_ok=True)
 
@@ -515,6 +513,228 @@ async def preprocess_user_input(user_input: str, image_path: str = None) -> tupl
     return (enriched_prompt, classification)
 
 
+# ── Command extraction from Marin's text output ──────────────────────────────
+_TEXT_CMD_PAT = re.compile(
+    r'^\s*(?:[-*>]+\s*)?`?((?:sudo\s+)?'
+    r'python3?\s+.*|'
+    r'mkdir\s+.*|touch\s+.*|cp\s+.*|mv\s+.*|chmod\s+.*|chown\s+.*|'
+    r'echo\s+.*|cat\s+.*|'
+    r'ls\s*.*|git\s+\S+.*|'
+    r'pip3?\s+\S+.*|'
+    r'curl\s+.*|wget\s+.*|'
+    r'bash\s+\S+|sh\s+\S+|'
+    r'make\s*.*|gcc\s+.*|'
+    r'rm\s+[^/]+'               # rm anything EXCEPT rm -rf /
+    r')`?\s*$',
+    re.MULTILINE | re.IGNORECASE
+)
+
+
+def _strip_md_trail(cmd: str) -> str:
+    """Remove trailing markdown decoration: backticks, parenthetical text, non-ASCII."""
+    # Remove trailing backtick-wrapped text and *(markdown)* patterns
+    cmd = re.sub(r'\s*`[^`]*`\s*$', '', cmd)
+    cmd = re.sub(r'\s*\*\([^)]*\)\*\s*$', '', cmd)
+    # Remove trailing non-ASCII chars and lone backticks
+    cmd = re.sub(r'[^\x20-\x7E]+$', '', cmd)
+    cmd = re.sub(r'`+$', '', cmd)
+    return cmd.strip()
+
+
+def _convert_heredocs(body: str) -> str:
+    """
+    Detect `cat <<EOF > path` heredocs and convert them to Python file-write
+    commands so they actually work when piped through shell stdin.
+
+    Example input in body:
+        cat <<EOF > unique/limoni.py
+        import os
+        print("hello")
+        EOF
+
+    Converted to:
+        python3 -c "import json,sys;open(sys.argv[1],'w').write(json.loads(sys.argv[2]))" unique/limoni.py "import os\nprint(\"hello\")"
+    """
+    import textwrap
+
+    def _replace_heredoc(m):
+        target_file = m.group(1).strip()
+        heredoc_body = m.group(2)
+        # Strip common leading indentation
+        content = textwrap.dedent(heredoc_body)
+        # JSON-encode for safe passing through shell
+        encoded = json.dumps(content)
+        return (
+            f'python3 -c "import json,sys;open(sys.argv[1],\'w\').write(json.loads(sys.argv[2]))" '
+            f'{target_file} {encoded}'
+        )
+
+    # Match: cat <<EOF > path  ...  EOF  (allow indented EOF)
+    pattern = re.compile(
+        r'cat\s+<<\s*EOF\s*>\s*(\S+)\s*\n(.*?)^\s*EOF\s*$',
+        re.DOTALL | re.MULTILINE | re.IGNORECASE
+    )
+    return pattern.sub(_replace_heredoc, body)
+
+
+def _exec_text_commands(text: str):
+    """
+    Scan Marin's generated text for shell commands and execute them.
+    Handles heredocs (cat <<EOF), strips trailing markdown, validates
+    against marin_fier.is_cmd_allowed() allowlist.
+    Graph/stock/crypto commands go through command_queue.py with delays.
+    Simple commands (mkdir, chmod, echo, etc.) run directly.
+    """
+    import datetime
+    import tempfile
+
+    # Strip ``` code block fences but KEEP inner content (heredocs live inside them)
+    body = re.sub(r'```(?:\w*\n)?([\s\S]*?)```', r'\1', text)
+
+    # Strip non-ASCII decorative chars (emojis, arrows, etc.) from command lines
+    body = re.sub(r'[^\x20-\x7E\n]', '', body)
+
+    # Strip inline backtick code spans (preserve content, remove wrapping)
+    body = re.sub(r'`([^`\n]+)`', r'\1', body)
+
+    # Convert heredocs to Python file-write commands
+    body = _convert_heredocs(body)
+
+    try:
+        from marin_fier import is_cmd_allowed, _cmd_log
+    except ImportError:
+        def is_cmd_allowed(cmd):
+            return True, "ok"
+        _cmd_log = None
+
+    def _delay_for(cmd: str) -> int:
+        lower = cmd.lower()
+        if "mathplot" in lower or "maths/" in lower:
+            return 40 if "butterfly" in lower else 4
+        if "stock" in lower:
+            return 20
+        if "crypto" in lower:
+            return 10
+        return 0   # 0 = run directly, don't queue
+
+    # ── Collect raw command strings, strip trailing markdown ──────────────
+    raw_cmds = []
+    for m in _TEXT_CMD_PAT.finditer(body):
+        cmd = _strip_md_trail(m.group(1))
+        if cmd:
+            raw_cmds.append(cmd)
+
+    if not raw_cmds:
+        return
+
+    # ── Build command list with delays, validate against allowlist ────────
+    cmds = []
+    for cmd in raw_cmds:
+        first = cmd.split()[0].lstrip('./')
+        allowed, reason = is_cmd_allowed(cmd)
+        if not allowed:
+            print(f"[Marin] Blocked command: {cmd} — {reason}")
+            continue
+
+        delay = _delay_for(cmd)
+        name = cmd[:50]
+        cmds.append({"cmd": cmd, "delay": delay, "name": name})
+
+    if not cmds:
+        return
+
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+
+    # ── Split: queued (graph/stock/crypto) vs direct (mkdir, chmod, etc.) ─
+    queued = [c for c in cmds if c["delay"] > 0]
+    direct = [c for c in cmds if c["delay"] == 0]
+
+    # ── Log all commands to terminal panel ────────────────────────────────
+    if _cmd_log is not None:
+        for c in cmds:
+            _cmd_log.append({
+                "cmd": c["cmd"],
+                "allowed": True,
+                "output": f"⏳ queued ({c['delay']}s)" if c["delay"] > 0 else "⏳ running...",
+                "ts": ts,
+            })
+            if len(_cmd_log) > 100:
+                _cmd_log.pop(0)
+
+    # ── Run direct commands immediately in a background thread ────────────
+    if direct:
+        def _run_direct():
+            for c in direct:
+                try:
+                    r = subprocess.run(
+                        c["cmd"], shell=True,
+                        capture_output=True, text=True, timeout=30,
+                        cwd=BASE_DIR,
+                        env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
+                    )
+                    out = (r.stdout or r.stderr or "(done)").strip()[:500]
+                    print(f"[Marin] Ran: {c['cmd'][:80]} → {out[:100]}")
+                except Exception as e:
+                    out = f"Error: {e}"
+                    print(f"[Marin] Command failed: {c['cmd'][:80]} — {e}")
+
+                if _cmd_log is not None:
+                    for entry in reversed(_cmd_log):
+                        if entry["cmd"] == c["cmd"] and "running" in entry.get("output", ""):
+                            entry["output"] = out[:200]
+                            break
+
+        threading.Thread(target=_run_direct, daemon=True).start()
+
+    # ── Queue graph/stock/crypto commands via command_queue.py ────────────
+    if queued:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        try:
+            json.dump(queued, tmp)
+            tmp_path = tmp.name
+        finally:
+            tmp.close()
+
+        def _run_queued(cmds, tmp_path):
+            try:
+                r = subprocess.run(
+                    [sys.executable,
+                     os.path.join(BASE_DIR, "tools/command_queue.py"),
+                     "--json", tmp_path],
+                    capture_output=True, text=True, timeout=300,
+                    cwd=BASE_DIR,
+                    env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
+                )
+                out = (r.stdout or r.stderr or "(done)").strip()[:500]
+                if _cmd_log is not None:
+                    for c in cmds:
+                        for entry in reversed(_cmd_log):
+                            if entry["cmd"] == c["cmd"] and "queued" in entry.get("output", ""):
+                                entry["output"] = out[:200]
+                                break
+                    ts2 = datetime.datetime.now().strftime("%H:%M:%S")
+                    _cmd_log.append({
+                        "cmd": f"[batch] {len(cmds)} queued cmds done",
+                        "allowed": True, "output": out[:300], "ts": ts2,
+                    })
+                    while len(_cmd_log) > 100:
+                        _cmd_log.pop(0)
+            except Exception as e:
+                if _cmd_log is not None:
+                    ts2 = datetime.datetime.now().strftime("%H:%M:%S")
+                    _cmd_log.append({
+                        "cmd": "[batch] ERROR",
+                        "allowed": False, "output": str(e)[:300], "ts": ts2,
+                    })
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run_queued, args=(queued, tmp_path), daemon=True).start()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LLM GENERATOR
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -561,6 +781,9 @@ def response(
         piece       = chunk["message"]["content"]
         full_reply += piece
         yield piece
+
+    # Auto-execute any python3 commands Marin wrote as text
+    _exec_text_commands(full_reply)
 
     save_to_history(bare_question, full_reply)
     marin_vibe = analyze_marin_vibe(full_reply)

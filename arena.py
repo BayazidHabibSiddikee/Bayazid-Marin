@@ -24,9 +24,9 @@ import ollama
 from bayazid import BASE_CHARACTER as BAYAZID_CHARACTER, MODEL
 from marin   import BASE_CHARACTER as MARIN_BASE_CHARACTER, get_character_prompt
 
-# ── History file paths (same as used by each engine) ─────────────────────────
+# ── History file paths ────────────────────────────────────────────────────────
 BASE_DIR          = os.path.dirname(os.path.abspath(__file__))
-MARIN_HISTORY_FILE   = os.path.join(BASE_DIR, "marin_history.json")
+ARENA_HISTORY_FILE   = os.path.join(BASE_DIR, "arena_history.json")
 BAYAZID_HISTORY_FILE = os.path.join(BASE_DIR, "bayazid_history.json")
 
 # Arena uses the base model directly — same model, clean slate per debate
@@ -53,21 +53,9 @@ def _load_json_history(path: str, limit: int = 20) -> list:
         return []
 
 
-def _load_marin_history(limit: int = 20) -> list:
-    """
-    Try MongoDB first (same logic as marin.py), fall back to JSON.
-    Returns list of {role, content} dicts.
-    """
-    try:
-        from pymongo import MongoClient
-        client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=2000)
-        client.server_info()
-        col  = client["marin_db"]["chat_history"]
-        docs = list(col.find({}, {"_id": 0, "role": 1, "content": 1})
-                    .sort("_id", -1).limit(limit))
-        return list(reversed(docs))
-    except Exception:
-        return _load_json_history(MARIN_HISTORY_FILE, limit)
+def _load_arena_history(limit: int = 20) -> list:
+    """Load arena's own history (not marin's personal chat)."""
+    return _load_json_history(ARENA_HISTORY_FILE, limit)
 
 
 def _load_bayazid_history(limit: int = 20) -> list:
@@ -264,7 +252,7 @@ async def arena_stream(request: Request):
     bayazid_hist_ctx = ""
 
     if character in ("marin", "judge"):
-        marin_hist  = await asyncio.to_thread(_load_marin_history, 20)
+        marin_hist  = await asyncio.to_thread(_load_arena_history, 20)
         marin_hist_ctx = _format_history_for_context(marin_hist, "Marin")
 
     if character in ("bayazid", "judge"):
@@ -334,7 +322,7 @@ async def arena_stream_live(request: Request):
 @app.get("/arena/history")
 async def arena_history(limit: int = 10):
     """Return the last N messages from both histories."""
-    marin_hist   = await asyncio.to_thread(_load_marin_history,   limit)
+    marin_hist   = await asyncio.to_thread(_load_arena_history,   limit)
     bayazid_hist = await asyncio.to_thread(_load_bayazid_history, limit)
     return {
         "marin":   marin_hist,
@@ -348,14 +336,14 @@ async def arena_history(limit: int = 10):
 
 @app.get("/health")
 async def health():
-    marin_h   = await asyncio.to_thread(_load_marin_history,   1)
+    marin_h   = await asyncio.to_thread(_load_arena_history,   1)
     bayazid_h = await asyncio.to_thread(_load_bayazid_history, 1)
     return {
         "status":              "operational",
         "server":              "arena",
         "port":                5071,
         "model":               ARENA_MODEL,
-        "marin_history_msgs":  len(await asyncio.to_thread(_load_marin_history,   200)),
+        "marin_history_msgs":  len(await asyncio.to_thread(_load_arena_history,   200)),
         "bayazid_history_msgs":len(await asyncio.to_thread(_load_bayazid_history, 200)),
     }
 

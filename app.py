@@ -235,10 +235,13 @@ async def cmd_log_page(request: Request):
                                       context={"logs": logs})
 
 @app.get("/cmd/log/json")
-async def cmd_log_json():
+async def cmd_log_json(limit: int = 100):
     try:
         from marin_fier import _cmd_log
-        return {"logs": list(reversed(_cmd_log))}
+        logs = list(reversed(_cmd_log))
+        if limit > 0:
+            logs = logs[:limit]
+        return {"logs": logs}
     except ImportError:
         return {"logs": []}
 

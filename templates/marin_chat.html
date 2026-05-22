@@ -32,6 +32,7 @@
             display: flex;
             flex-direction: column;
             height: 100vh;
+            overflow: hidden;
             background-image:
                 radial-gradient(ellipse 60% 50% at 10% 0%, #ff6b9d22 0%, transparent 70%),
                 radial-gradient(ellipse 60% 50% at 90% 100%, #c2185b22 0%, transparent 70%);
@@ -45,6 +46,7 @@
             background: #1a0a10dd;
             border-bottom: 1px solid #ff6b9d22;
             backdrop-filter: blur(10px);
+            flex-shrink: 0;
         }
 
         .back {
@@ -230,6 +232,7 @@
             background: #1a0a10ee;
             border-top: 1px solid #ff6b9d22;
             backdrop-filter: blur(10px);
+            flex-shrink: 0;
         }
 
         .input-row {
@@ -287,7 +290,7 @@
         <div style="display:flex;gap:6px;margin-left:12px;align-items:center">
             <a href="http://localhost:5070/chat" style="font-family:monospace;font-size:.65rem;color:#8b5cf666;text-decoration:none;padding:3px 10px;border:1px solid #8b5cf622;border-radius:3px;transition:all .2s" onmouseover="this.style.color='#a78bfa';this.style.borderColor='#8b5cf6'" onmouseout="this.style.color='#8b5cf666';this.style.borderColor='#8b5cf622'">⚔ BAYAZID</a>
             <a href="http://localhost:5071/arena" style="font-family:monospace;font-size:.65rem;color:#fbbf2488;text-decoration:none;padding:3px 10px;border:1px solid #fbbf2433;border-radius:3px;transition:all .2s" onmouseover="this.style.color='#fbbf24';this.style.borderColor='#fbbf24'" onmouseout="this.style.color='#fbbf2488';this.style.borderColor='#fbbf2433'">⚡ ARENA</a>
-            <a href="/cmd/log" target="_blank" id="term-btn" style="font-family:monospace;font-size:.65rem;color:#22d3ee88;text-decoration:none;padding:3px 10px;border:1px solid #22d3ee33;border-radius:3px;transition:all .2s" onmouseover="this.style.color='#22d3ee';this.style.borderColor='#22d3ee'" onmouseout="this.style.color='#22d3ee88';this.style.borderColor='#22d3ee33'">⬛ TERMINAL</a>
+            <button id="term-btn" onclick="toggleTermPanel()" style="font-family:monospace;font-size:.65rem;background:none;cursor:pointer;padding:3px 10px;border:1px solid #22d3ee33;border-radius:3px;transition:all .2s;color:#22d3ee88" title="Toggle terminal log">⬛ <span id="term-label">LOG</span></button>
             <button id="word-limit-btn" onclick="toggleWordLimit()" style="font-family:monospace;font-size:.65rem;background:none;cursor:pointer;padding:3px 10px;border:1px solid #a3e63533;border-radius:3px;transition:all .2s;color:#a3e63588" title="Word limit">📏 <span id="wl-label">FREE</span></button>
             <button id="voice-btn" onclick="toggleVoice()" style="font-family:monospace;font-size:.65rem;background:none;cursor:pointer;padding:3px 10px;border:1px solid #f4722433;border-radius:3px;transition:all .2s;color:#f4722444" title="Voice on/off">🔇 <span id="voice-label">OFF</span></button>
         </div>
@@ -306,6 +309,17 @@
     </div>
 
     <div id="messages"></div>
+
+    <!-- ── Terminal History Panel ────────────────────────────────────────── -->
+    <div id="term-panel" style="display:none;background:#0d0608;border-top:1px solid #22d3ee22;border-bottom:1px solid #22d3ee22;max-height:340px;overflow-y:auto;font-family:'Courier New',monospace;font-size:.75rem;padding:8px 16px;flex-shrink:0">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid #22d3ee11;position:sticky;top:0;background:#0d0608">
+            <span style="color:#22d3ee;font-weight:bold">⬛ TERMINAL LOG</span>
+            <span id="term-count" style="color:#22d3ee44;font-size:.65rem">0 commands</span>
+            <button onclick="loadTermLog()" style="margin-left:auto;background:none;border:1px solid #22d3ee33;color:#22d3ee66;border-radius:3px;cursor:pointer;padding:2px 8px;font-size:.65rem;font-family:monospace">↻</button>
+            <button onclick="document.getElementById('term-panel').style.display='none';document.getElementById('term-btn').style.color='#22d3ee88';document.getElementById('term-btn').style.borderColor='#22d3ee33';document.getElementById('term-label').textContent='LOG'" style="background:none;border:1px solid #ff6b9d33;color:#ff6b9d66;border-radius:3px;cursor:pointer;padding:2px 8px;font-size:.65rem;font-family:monospace">✕</button>
+        </div>
+        <div id="term-entries"></div>
+    </div>
 
     <!-- Image Preview -->
     <div id="image-preview">
@@ -527,12 +541,12 @@
 
         // Override renderer to add copy button to code blocks
         const renderer = new marked.Renderer();
-        renderer.code = (code, lang) => {
+        renderer.code = ({text, lang}) => {
             const langLabel = lang || 'code';
             const highlighted = (lang && hljs.getLanguage(lang))
-                ? hljs.highlight(code, { language: lang }).value
-                : hljs.highlightAuto(code).value;
-            const escaped = code.replace(/`/g, '\`').replace(/\\/g, '\\\\');
+                ? hljs.highlight(text, { language: lang }).value
+                : hljs.highlightAuto(text).value;
+            const escaped = text.replace(/`/g, '\`').replace(/\\/g, '\\\\');
             return `<div class="code-header">
                         <span>${langLabel}</span>
                         <button class="copy-btn" onclick="copyCode(this, \`${escaped}\`)">copy</button>
@@ -633,10 +647,11 @@
             previewImg.src = '';
         }
 
-        // ── esc() only used for USER messages (no markdown) ──────────────────
+        // ── esc() / escHtml() for safe HTML escaping ─────────────────────────
         function esc(t) {
             return t ? t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
         }
+        const escHtml = esc;
 
         function addMsg(text, role, imageUrl = null) {
             const div = document.createElement('div');
@@ -759,8 +774,16 @@
                 (data.messages || []).forEach(msg => {
                     const role = msg.role === 'assistant' ? 'bot' : 'user';
                     let content = msg.content || '';
-                    if (role === 'user' && content.includes("USER'S MESSAGE:")) {
-                        content = content.split("USER'S MESSAGE:").pop().trim();
+                    if (role === 'user') {
+                        // Extract just the user's actual message from the enriched prompt
+                        const marker = "USER'S MESSAGE:";
+                        const idx = content.lastIndexOf(marker);
+                        if (idx !== -1) {
+                            content = content.substring(idx + marker.length).trim();
+                        }
+                    } else {
+                        // Strip system signals from bot messages
+                        content = content.replace(/__VIBE__\w+/g, '').replace(/__STRUCTURED__[\s\S]*/g, '').trim();
                     }
                     if (content) addMsg(content, role);
                 });
@@ -826,14 +849,12 @@
 
         function updateVoiceLabel() {
             const btn = document.getElementById('voice-btn');
-            const lbl = document.getElementById('voice-label');
             if (voiceOn) {
-                lbl.textContent = 'ON';
-                btn.textContent = '🔊 ON';
+                btn.innerHTML = '🔊 <span id="voice-label">ON</span>';
                 btn.style.color = '#f47224';
                 btn.style.borderColor = '#f4722466';
             } else {
-                btn.textContent = '🔇 OFF';
+                btn.innerHTML = '🔇 <span id="voice-label">OFF</span>';
                 btn.style.color = '#f4722444';
                 btn.style.borderColor = '#f4722433';
             }
@@ -847,6 +868,49 @@
             } catch(e) {}
             updateVoiceLabel();
         }
+
+        // ── Terminal Log Panel ──────────────────────────────────────────────
+        let termVisible = false;
+
+        function toggleTermPanel() {
+            termVisible = !termVisible;
+            const panel = document.getElementById('term-panel');
+            const btn = document.getElementById('term-btn');
+            const lbl = document.getElementById('term-label');
+            panel.style.display = termVisible ? 'block' : 'none';
+            btn.style.color = termVisible ? '#22d3ee' : '#22d3ee88';
+            btn.style.borderColor = termVisible ? '#22d3ee66' : '#22d3ee33';
+            lbl.textContent = termVisible ? 'LOG ▼' : 'LOG';
+            if (termVisible) loadTermLog();
+        }
+
+        async function loadTermLog() {
+            try {
+                const r = await fetch('/cmd/log/json?limit=10');
+                const d = await r.json();
+                const container = document.getElementById('term-entries');
+                const count = document.getElementById('term-count');
+                if (!d.logs || d.logs.length === 0) {
+                    container.innerHTML = '<div style="color:#22d3ee33;text-align:center;padding:12px 0">No commands yet</div>';
+                    count.textContent = '0 commands';
+                    return;
+                }
+                count.textContent = d.logs.length + ' commands';
+                container.innerHTML = d.logs.map(e => `
+                    <div style="margin-bottom:4px;padding:4px 0;border-bottom:1px solid #22d3ee08">
+                        <div style="display:flex;gap:8px;align-items:center">
+                            <span style="color:#22d3ee44;font-size:.65rem">${e.ts}</span>
+                            <span style="color:${e.allowed ? '#a3e635' : '#ef4444'}">${e.allowed ? '$' : '✗'}</span>
+                            <span style="color:#e2e8f0">${escHtml(e.cmd)}</span>
+                        </div>
+                        <div style="color:#94a3b8;padding:2px 0 0 20px;font-size:.7rem;white-space:pre-wrap;word-break:break-all;max-height:60px;overflow:hidden">${escHtml(e.output || '(no output)')}</div>
+                    </div>
+                `).join('');
+            } catch(e) {}
+        }
+
+        // Auto-refresh term log every 5s if visible
+        setInterval(() => { if (termVisible) loadTermLog(); }, 5000);
 
         input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
     </script>

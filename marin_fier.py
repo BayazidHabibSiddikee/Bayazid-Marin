@@ -18,6 +18,7 @@ Flow:
 import re
 import json
 import os
+import signal
 import sys
 import subprocess
 from pathlib import Path
@@ -60,6 +61,33 @@ class Connect4Input(BaseModel):
 class CmdInput(BaseModel):
     command: str = Field(description="Shell command to run, e.g. 'ls -la', 'git status', 'python3 --version'")
 
+class MathPlotInput(BaseModel):
+    expression: str = Field(
+        description=(
+            "Full math expression to plot. Can be:\n"
+            "- A preset name: 'circle', 'heart', 'rose', 'spiral', 'butterfly', 'lissajous', "
+            "'cardioid', 'astroid', 'lemniscate', 'sine', 'parabola'\n"
+            "- Parametric: x=r*cos(t), y=r*sin(t)\n"
+            "- Equation: 'y = x^2', 'x = y^2 + 5'\n"
+            "- Natural language: 'draw a heart', 'plot butterfly'\n"
+            "- Explicit: '-x r*cos(t) -y r*sin(t)'"
+        )
+    )
+
+class RunSequenceInput(BaseModel):
+    commands: str = Field(
+        description=(
+            "One or more commands to run sequentially. "
+            "Each command is auto-killed after a delay (4s math, 20s stock, 10s crypto, 40s butterfly).\n\n"
+            "Acceptable formats:\n"
+            '- Comma-separated presets: "heart, butterfly, spiral"\n'
+            '- Space-separated presets: "heart butterfly spiral"\n'
+            '- Semi-colon separated shell commands: "ls -la; python3 maths/mathplot.py heart"\n'
+            '- JSON array: \'[{"cmd":"python3 maths/mathplot.py heart","delay":3}]\'\n\n'
+            "This tool is ideal when the user asks for MULTIPLE graphs or operations at once."
+        )
+    )
+
 class NoInput(BaseModel):
     pass   # tools that need no parameters
 
@@ -67,10 +95,23 @@ class NoInput(BaseModel):
 # ── COMMAND ALLOWLIST ─────────────────────────────────────────────────────────
 _CMD_ALLOW = re.compile(
     r'^(ls|cat|pwd|echo|whoami|date|uptime|df|du|free|uname|hostname|'
-    r'ps|git|python3?|pip3?|mkdir|touch|cp|mv|find|grep|head|tail|wc|'
-    r'sort|uniq|cut|awk|sed|tr|curl|wget|make|gcc|g\+\+|avr-gcc|avrdude|'
-    r'tree|which|type|env|printenv|lsusb|lsblk|ip|ping|ollama|uvicorn|'
-    r'node|npm|cargo|rustc|systemctl|journalctl|ffmpeg)',
+    r'ps|git|python3?|pip3?|mkdir|touch|cp|mv|ln|rmdir|chmod|chown|'
+    r'find|grep|rg|head|tail|wc|sort|uniq|cut|awk|sed|tr|'
+    r'curl|wget|make|gcc|g\+\+|avr-gcc|avrdude|cargo|rustc|'
+    r'tree|which|type|env|printenv|lsusb|lsblk|ip|ping|'
+    r'ollama|uvicorn|node|npm|npx|yarn|pnpm|'
+    r'systemctl|journalctl|ffmpeg|ffprobe|yt-dlp|youtube-dl|'
+    r'cd|nano|vim|nvim|emacs|code|less|more|'
+    r'docker|podman|kubectl|docker-compose|'
+    r'ssh|scp|rsync|diff|stat|realpath|readlink|basename|dirname|'
+    r'time|timeout|htop|top|btop|atop|sensors|lscpu|lspci|lsmod|dmesg|'
+    r'bash|zsh|sh|fish|screen|tmux|'
+    r'nohup|watch|sleep|id|who|groups|users|'
+    r'firefox|chromium|google-chrome|xdg-open|mpv|vlc|'
+    r'notify-send|file|bc|expr|tee|yes|xargs|'
+    r'convert|magick|tesseract|jq|yq|'
+    r'nl|od|xxd|hexdump|expand|unexpand|fmt|pr|fold|'
+    r'locale|timedatectl|localectl)',
     re.IGNORECASE
 )
 _CMD_BLOCK = re.compile(
@@ -80,6 +121,25 @@ _CMD_BLOCK = re.compile(
 )
 
 _cmd_log: list[dict] = []   # in-memory log (last 100), served at /cmd/log
+
+# ── KNOWN SCRIPTS — alias → full command; auto-resolved when mentioned in chat ──
+_KNOWN_SCRIPTS: dict[str, str] = {
+    "execute_limoni": "python3 unique/execute_limoni.py",
+    "limoni":         "python3 unique/execute_limoni.py",
+    "unique":         "python3 unique/execute_limoni.py",
+    "marin":          "python3 marin.py",
+    "bayazid":        "python3 bayazid.py",
+    "arena":          "python3 arena.py",
+    "rag_server":     "python3 rag_server.py",
+    "run_marin":      "bash run_marin.sh",
+    "run_bayazid":    "bash run_bayazid.sh",
+    "run_arena":      "bash run_arena.sh",
+    "run_all":        "bash run_all.sh",
+    "mathplot":       "python3 maths/mathplot.py",
+    "stock":          "python3 tools/stock.py",
+    "crypto":         "python3 tools/crypto.py",
+}
+_KNOWN_SCRIPT_KEYS: set[str] = set(_KNOWN_SCRIPTS.keys())
 
 
 def is_cmd_allowed(cmd: str) -> tuple[bool, str]:
@@ -124,16 +184,43 @@ def tool_run_command(command: str) -> str:
 # These are the actual callables passed to StructuredTool
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _popen(script: str, args: list[str] = []):
+def _popen(script: str, args: list[str] = [], timeout: float | None = None):
+    import threading
     path = BASE_DIR / script
     if not path.exists():
         return f"Script not found: {script}"
-    subprocess.Popen(
-        [sys.executable, str(path)] + args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    env = os.environ.copy()
+    env.setdefault("DISPLAY", ":0")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(path)] + args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(BASE_DIR),
+            env=env,
+        )
+    except Exception as e:
+        return f"Failed to launch {script}: {e}"
+
+    if timeout:
+        def _kill():
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                import time
+                time.sleep(0.4)
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                print(f"[tool:{script}] killed after {timeout}s")
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                print(f"[tool:{script}] kill error: {e}")
+        threading.Timer(timeout, _kill).start()
+
     return None   # None = launched OK
 
 
@@ -150,7 +237,7 @@ def tool_set_timer(duration: str) -> str:
 
 def tool_get_crypto_price(coin: str = "bitcoin") -> str:
     coin = coin.lower().strip()
-    err = _popen("tools/crypto.py", [coin])
+    err = _popen("tools/crypto.py", ["--coin", coin], timeout=10)
     if err: return err
     return (f"Live {coin.title()} price tracker window is now open. "
             f"Shows USD price refreshing every second via CoinGecko.")
@@ -162,7 +249,7 @@ def tool_get_stock_info(company: str) -> str:
     if company.upper() in _COMMON_UPPER or (company.isupper() and 1 <= len(company) <= 5):
         err = _popen("tools/stock.py", ["--ticker", company.upper()])
     else:
-        err = _popen("tools/stock.py", [company])
+        err = _popen("tools/stock.py", ["--company", company])
     if err: return err
     return (f"Stock info window opened for {company}. "
             f"Fetching current market price and 30-day chart via Yahoo Finance.")
@@ -202,6 +289,106 @@ def tool_take_screenshot() -> str:
     err = _popen("tools/image.py")
     if err: return err
     return "Screenshot captured and saved."
+
+def tool_math_plot(expression: str) -> str:
+    """Launch the math equation plotter to draw parametric curves."""
+    import shlex
+    args = shlex.split(expression)
+    err = _popen("maths/mathplot.py", args)
+    if err: return err
+    return f"Math plotter launched for: '{expression}'. CNC simulation window opening."
+
+
+def tool_run_sequence(commands: str) -> str:
+    """
+    Run multiple commands sequentially with auto-kill delays.
+    Delegates to tools/command_queue.py for timing and lifecycle.
+    """
+    import json
+    import tempfile
+    import datetime
+
+    trimmed = commands.strip()
+    cmd_list = []
+
+    # Try JSON array
+    if trimmed.startswith("["):
+        try:
+            cmd_list = json.loads(trimmed)
+        except json.JSONDecodeError:
+            pass
+
+    # Try JSON object (single command)
+    if not cmd_list and trimmed.startswith("{"):
+        try:
+            cmd_list = [json.loads(trimmed)]
+        except json.JSONDecodeError:
+            pass
+
+    if not cmd_list:
+        # Split by semicolon (shell commands) or comma (presets)
+        parts = [p.strip() for p in re.split(r'[;,|]', trimmed) if p.strip()]
+        for p in parts:
+            # If it looks like a shell command (has spaces or slashes), run as-is
+            if " " in p or "/" in p:
+                cmd_list.append({"cmd": p, "delay": 3, "name": p[:40]})
+            else:
+                # Treat as mathplot preset
+                cmd_list.append({
+                    "cmd": f"python3 maths/mathplot.py {p}",
+                    "delay": 4,
+                    "name": f"Plot: {p}",
+                })
+
+    if not cmd_list:
+        return "run_sequence: no commands parsed."
+
+    # Default delays: stock=20s, crypto=10s, math=4s, butterfly=40s
+    for item in cmd_list:
+        if "delay" not in item:
+            cmd = item.get("cmd", "").lower()
+            if "stock" in cmd or "yahoo" in cmd:
+                item["delay"] = 20
+            elif "crypto" in cmd or "finance" in cmd:
+                item["delay"] = 10
+            elif "butterfly" in cmd or "teal" in cmd:
+                item["delay"] = 40
+            else:
+                item["delay"] = 4
+
+    # Write to temp JSON and delegate to command_queue.py
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    try:
+        json.dump(cmd_list, tmp)
+        tmp_path = tmp.name
+    finally:
+        tmp.close()
+
+    try:
+        r = subprocess.run(
+            [sys.executable, str(BASE_DIR / "tools/command_queue.py"), "--json", tmp_path],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(BASE_DIR),
+            env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
+        )
+        out = (r.stdout or r.stderr or "(no output)").strip()
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        _cmd_log.append({
+            "cmd": f"[tool:run_sequence] {trimmed[:80]}",
+            "allowed": True,
+            "output": out[:500],
+            "ts": ts,
+        })
+        if len(_cmd_log) > 100:
+            _cmd_log.pop(0)
+        return f"Sequenced {len(cmd_list)} commands:\n{out[:1200]}"
+    except Exception as e:
+        return f"run_sequence error: {e}"
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -272,6 +459,30 @@ TOOLS = [
         ),
         args_schema=CmdInput,
     ),
+    StructuredTool.from_function(
+        func=tool_math_plot, name="math_plot",
+        description=(
+            "Draw a math equation, parametric curve, or preset shape using the CNC simulator. "
+            "Use when asked to plot, draw, or visualize any equation, shape, or graph. "
+            "Supports presets: circle, heart, rose, spiral, butterfly, lissajous, cardioid, "
+            "astroid, lemniscate, sine, parabola, cycloid, star, infinity. "
+            "Also supports free-form equations like 'y = x^2' or 'x = r*cos(t), y = r*sin(t)', "
+            "and natural language like 'draw a heart' or 'plot butterfly'."
+        ),
+        args_schema=MathPlotInput,
+    ),
+    StructuredTool.from_function(
+        func=tool_run_sequence, name="run_sequence",
+        description=(
+            "Run MULTIPLE operations in sequence — each is auto-killed after a delay "
+            "(math/graph: 4s, stock: 20s, crypto: 10s, butterfly: 40s). "
+            "Use this when the user wants several graphs, stock checks, or mixed operations "
+            "in one request. "
+            "Accepts command presets (heart, butterfly) or full shell commands. "
+            "Example: 'heart, butterfly, spiral' draws 3 shapes sequentially on one window."
+        ),
+        args_schema=RunSequenceInput,
+    ),
 ]
 
 # Map name → StructuredTool for fast lookup
@@ -286,7 +497,7 @@ def _get_llm():
         llm = ChatOllama(
             model="gemma4:31b-cloud",
             temperature=0.0,
-            num_predict=40,     # just enough for one tool_call JSON
+            num_predict=120,    # enough for tool_call JSON + command string
         )
         _LLM_WITH_TOOLS = llm.bind_tools(TOOLS, tool_choice="any")
     return _LLM_WITH_TOOLS
@@ -421,6 +632,8 @@ def _extract_duration_from(lower: str) -> str:
     return lower.strip()
 
 
+# ── REGEX PATTERNS for Stage 1 ────────────────────────────────────────────────
+
 _STOCK_PAT = re.compile(r'\b(stock|share\s*price|ticker|market\s*price)\b')
 _ALARM_PAT = re.compile(r'\b(set\s+an?\s+alarm|alarm\s+(?:for|at))\b')
 _TIMER_PAT = re.compile(r'\b(set\s+a?\s*timer|start\s+timer)\b|\d+\s*(?:min|minute|hour|hr|sec)\s*(?:timer|countdown)')
@@ -432,7 +645,22 @@ _WORD_PAT  = re.compile(r'\b(word\s*game|wordgame|word\s*scramble)\b')
 _DRAW_PAT  = re.compile(r'\b(draw\s+me|take\s+(?:my\s+)?photo\s+and\s+draw)\b')
 _SHOT_PAT   = re.compile(r'\b(screenshot|take\s+a\s*(?:pic|screen))\b')
 _ALL_PAT    = re.compile(r'\b(use\s+(?:every|all)\s+(?:tool|command|ability)|run\s+(?:every|all)\s+(?:tool|command)|show\s+(?:everything|all\s+tools))\b')
-_RUN_PAT    = re.compile(r'\b(run\s+(?:this\s+)?(?:command|script)|execute\s+command)\b|^[a-z_\-]+\s+[\-a-z0-9\./]')
+_RUN_PAT    = re.compile(
+    r'\b(?:run|execute)\s+(?:command\s*:?\s*)?(`?[a-z_\-./]+\s*(?:\|.*)?`?)',
+    re.IGNORECASE
+)
+_CAN_YOU_RUN_PAT = re.compile(
+    r'\b(?:can\s+you|could\s+you|please)\s+(`?[a-z][a-z0-9_\-+./]*`?(?:\s+[^\s,.!?]+){0,6})\s*$',
+    re.IGNORECASE
+)
+_MATH_PLOT_PAT = re.compile(
+    r'\b(draw|plot|graph)\s+(?:me\s+)?(?:a\s+)?(.+?)\s*$',
+    re.IGNORECASE
+)
+_EXECUTING_PAT = re.compile(
+    r'\bEXECUTING\s+(.+?)(?:\s*$|[,;!?])',
+    re.IGNORECASE
+)
 
 
 def _regex_stage(text: str) -> dict | None:
@@ -457,10 +685,24 @@ def _regex_stage(text: str) -> dict | None:
                 "params": {"company": company},
                 "confidence": 0.97}
 
+    # ── Math / Equation Plot: "draw heart", "plot butterfly", "graph y = x^2" ──
+    math_m = _MATH_PLOT_PAT.search(text)
+    if math_m:
+        expr = math_m.group(2).strip()
+        # Multi-preset: "draw heart, butterfly, and spiral" or "draw heart butterfly spiral"
+        if re.search(r',|\band\b', expr) or (
+            len(expr.split()) >= 3
+            and not any(c in expr for c in "=^+-*/()")
+        ):
+            return {"intent": "run_sequence",
+                    "params": {"commands": expr}, "confidence": 0.92}
+        return {"intent": "math_plot", "params": {"expression": expr}, "confidence": 0.92}
+
     # Bare ticker like "TSLA", "AAPL price", "how is NVDA doing" —
     # no "stock" keyword required if we recognise the symbol.
+    # Only match when NOT asking for a math plot (checked above).
     ticker = _extract_ticker_from(text)
-    if ticker:
+    if ticker and not _MATH_PLOT_PAT.search(text):
         return {"intent": "get_stock_info",
                 "params": {"company": ticker},
                 "confidence": 0.95}
@@ -497,11 +739,54 @@ def _regex_stage(text: str) -> dict | None:
     if _SHOT_PAT.search(lower):
         return {"intent": "take_screenshot", "params": {}, "confidence": 0.97}
 
-    # Explicit run/execute command
-    if _RUN_PAT.search(lower):
-        m = re.search(r'(?:run|execute)\s+(?:command\s*:?\s*)?(.+)', lower)
-        cmd = m.group(1).strip() if m else text.strip()
-        return {"intent": "run_command", "params": {"command": cmd}, "confidence": 0.90}
+    # ── "EXECUTING <command>" — high-priority command trigger ─────────────
+    exec_m = _EXECUTING_PAT.search(text)
+    if exec_m:
+        cmd = exec_m.group(1).strip().strip('`"\'')
+        alias = cmd.lower().rstrip('.py').rstrip('.sh')
+        if alias in _KNOWN_SCRIPTS:
+            cmd = _KNOWN_SCRIPTS[alias]
+        elif '/' in alias:
+            base = alias.rsplit('/', 1)[-1]
+            if base in _KNOWN_SCRIPTS:
+                cmd = _KNOWN_SCRIPTS[base]
+        else:
+            first = cmd.split()[0].lstrip('./')
+            if not _CMD_ALLOW.match(first):
+                return {"intent": "normal", "params": {}, "confidence": 0.6}
+        return {"intent": "run_command", "params": {"command": cmd}, "confidence": 0.96}
+
+    # ── Known script alias with run/launch/execute trigger ───────────────
+    for alias, full_cmd in _KNOWN_SCRIPTS.items():
+        if re.search(
+            rf'\b(?:run|start|launch|open|execute)\s+(?:the\s+)?'
+            rf'{re.escape(alias)}(?:\s+(?:script|file))?(?:\s*$|[.!?,;])',
+            text, re.IGNORECASE
+        ):
+            return {"intent": "run_command", "params": {"command": full_cmd}, "confidence": 0.94}
+
+    # ── Command: explicit "run X" / "execute X" ──────────────────────────
+    run_m = _RUN_PAT.search(text)
+    if run_m:
+        cmd = run_m.group(1).strip().strip('`')
+        return {"intent": "run_command", "params": {"command": cmd}, "confidence": 0.92}
+
+    # ── Command: "can you X / could you / please X" where X is a known command ──
+    can_m = _CAN_YOU_RUN_PAT.search(text)
+    if can_m:
+        phrase = can_m.group(1).strip().strip('`')
+        first_word = phrase.split()[0].lower().lstrip('./')
+        if _CMD_ALLOW.match(first_word):
+            return {"intent": "run_command", "params": {"command": phrase}, "confidence": 0.88}
+
+    # ── Bare command: text starts with a known allowlisted command ─────────────
+    bare = text.strip()
+    if bare:
+        first = bare.split()[0].lstrip('./')
+        if _CMD_ALLOW.match(first):
+            # Only for short/command-like messages (skip long conversational text that happens to start with a command word)
+            if len(bare) < 120 and not re.search(r'[?.!]\s*$', bare):
+                return {"intent": "run_command", "params": {"command": bare}, "confidence": 0.85}
 
     return None
 
@@ -561,10 +846,22 @@ def execute_tool(intent: str, params: dict) -> str | None:
     Returns the tool's context string (what it did), or None if not a tool.
     marin.py injects this context into Marin's LLM prompt.
     """
+    import datetime
     if intent not in _TOOL_MAP:
         return None
     try:
         result = _TOOL_MAP[intent].invoke(params)
+        # Log tool execution to cmd_log so terminal panel shows it
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        param_str = json.dumps(params)
+        _cmd_log.append({
+            "cmd": f"[tool:{intent}] {param_str}",
+            "allowed": True,
+            "output": (result or "(done)")[:500],
+            "ts": ts,
+        })
+        if len(_cmd_log) > 100:
+            _cmd_log.pop(0)
         return result
     except Exception as e:
         return f"Tool {intent} failed: {e}"
