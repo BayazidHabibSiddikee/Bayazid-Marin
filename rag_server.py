@@ -426,5 +426,20 @@ async def health():
 
 
 if __name__ == "__main__":
+    import argparse, resource
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=5080)
+    parser.add_argument("--max-memory-mb", type=int, default=800,
+                        help="Hard RSS limit in MB — process is killed by kernel if exceeded")
+    args = parser.parse_args()
+
+    if args.max_memory_mb > 0:
+        limit = args.max_memory_mb * 1024 * 1024
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+            print(f"🧠 Memory limit set to {args.max_memory_mb} MB (RLIMIT_AS)")
+        except Exception as e:
+            print(f"⚠️ Could not set memory limit: {e}")
+
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5080, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=args.port, reload=False)

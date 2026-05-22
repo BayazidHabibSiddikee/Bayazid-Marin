@@ -11,6 +11,8 @@ import re
 import time
 import os
 import json
+import threading
+import sys
 from datetime import datetime
 from typing import Optional, AsyncIterator, Dict, Any, List
 from pathlib import Path
@@ -378,18 +380,72 @@ class BookRAG:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# REMOTE RAG CLIENT — queries rag_server.py instead of loading FAISS locally
+# REMOTE RAG CLIENT — queries rag_server.py, auto-start on demand
 # ═══════════════════════════════════════════════════════════════════════════════
+import subprocess
 import httpx
+
+_rag_process = None
+_rag_start_lock = threading.Lock()
+_RAG_BASE = "http://127.0.0.1:5080"
+
+
+def _ensure_rag_server() -> bool:
+    global _rag_process
+    try:
+        r = httpx.get(f"{_RAG_BASE}/health", timeout=2.0)
+        if r.status_code == 200:
+            return True
+    except Exception:
+        pass
+
+    with _rag_start_lock:
+        if _rag_process is not None:
+            ret = _rag_process.poll()
+            if ret is None:
+                try:
+                    r = httpx.get(f"{_RAG_BASE}/health", timeout=3.0)
+                    return r.status_code == 200
+                except Exception:
+                    pass
+            _rag_process = None
+
+        try:
+            base = os.path.dirname(os.path.abspath(__file__))
+            script = os.path.join(base, "rag_server.py")
+            _rag_process = subprocess.Popen(
+                [sys.executable, script, "--port", "5080", "--max-memory-mb", "800"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            for _ in range(30):
+                try:
+                    r = httpx.get(f"{_RAG_BASE}/status", timeout=1.0)
+                    if r.status_code == 200 and r.json().get("ready"):
+                        print("[RAG] Server started and ready")
+                        return True
+                except Exception:
+                    pass
+                time.sleep(0.5)
+            print("[RAG] Server started but not ready — proceeding")
+            return True
+        except Exception as e:
+            print(f"[RAG] Failed to start server: {e}")
+            _rag_process = None
+            return False
+
 
 class _RemoteRAG:
     """Lightweight proxy — no FAISS, no embeddings, no RAM bomb."""
 
-    RAG_URL = "http://127.0.0.1:5080/search"
-
     def search(self, query: str, k: int = 20):
         try:
-            r = httpx.post(self.RAG_URL, json={"query": query, "k": k}, timeout=10)
+            _ensure_rag_server()
+            r = httpx.post(
+                f"{_RAG_BASE}/search",
+                json={"query": query, "k": k},
+                timeout=15.0
+            )
             r.raise_for_status()
             return r.json().get("results", [])
         except Exception as e:

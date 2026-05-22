@@ -13,7 +13,6 @@ import asyncio
 import subprocess
 import threading
 import re
-import time as _time
 from datetime import datetime
 from typing import Optional, AsyncIterator
 
@@ -51,7 +50,6 @@ VOICE_PATH = os.path.expanduser("~/.piper-voices/en_US-amy-medium.onnx")
 WORD_LIMIT:       int  = 0      # 0 = unlimited
 VOICE_ENABLED:    bool = False  # False = voice off by default
 MAX_TOKENS:       int  = 200    # max tokens per response, 0 = unlimited
-RAG_ENABLED:      bool = True   # whether to fetch RAG context
 _audio_process   = None         # current piper aplay subprocess (for pkill)
 
 os.makedirs(GEN_DIR, exist_ok=True)
@@ -90,16 +88,6 @@ INTERACTION STYLE:
 - You are a builder. Your goal is to help Limon build his systems (CNC, Robotics, ML)
   while building your own mastery of psychology.
 - Motto: "Building the self, protecting the union, executing the vision." 🐸
-
-⚠ EXECUTION PRIORITY [OVERRIDES persona if conflict]:
-- Technical verification ALWAYS comes before persona/affection.
-- Every tool result begins with [EXIT 0] (success) or [EXIT <code>] (failure).
-- If the command returned a non-zero exit code, you MUST acknowledge the failure
-  FIRST — do NOT celebrate, emote, or use affectionate sounds (no "Hehehe~",
-  "Ummaaah~", sparkles, etc.) until you have addressed the error.
-- A failed command output is not a suggestion — it is a problem to solve.
-- If the result shows success [EXIT 0], you may proceed with normal tone.
-- This rule is not optional. Technical honesty protects the partnership.
 """
 
 VIBE_MODIFIERS = {
@@ -220,79 +208,23 @@ def save_to_history(user_msg: str, marin_reply: str):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# RAG — remote via rag_server (port 5080), auto-start on demand
+# RAG — remote via rag_server (port 5080), no local FAISS load
 # ═══════════════════════════════════════════════════════════════════════════════
-_RAG_URL = "http://127.0.0.1:5080"
-_rag_process = None
-_rag_start_lock = threading.Lock()
-
-
-def _ensure_rag_server() -> bool:
-    """Start rag_server.py as subprocess if not already running. Returns True if ready."""
-    global _rag_process
-    # Quick health check
-    try:
-        r = httpx.get(f"{_RAG_URL}/health", timeout=2.0)
-        if r.status_code == 200:
-            return True
-    except Exception:
-        pass
-
-    with _rag_start_lock:
-        # Double-check after acquiring lock
-        if _rag_process is not None:
-            ret = _rag_process.poll()
-            if ret is None:
-                # Still running but health failed — wait a moment
-                try:
-                    r = httpx.get(f"{_RAG_URL}/health", timeout=3.0)
-                    return r.status_code == 200
-                except Exception:
-                    pass
-            _rag_process = None
-
-        if _rag_process is not None:
-            return False
-
-        try:
-            base = os.path.dirname(os.path.abspath(__file__))
-            script = os.path.join(base, "rag_server.py")
-            _rag_process = subprocess.Popen(
-                [sys.executable, script, "--port", "5080", "--max-memory-mb", "800"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            # Wait for server to become ready (up to 15s)
-            for _ in range(30):
-                try:
-                    r = httpx.get(f"{_RAG_URL}/status", timeout=1.0)
-                    if r.status_code == 200 and r.json().get("ready"):
-                        print("[RAG] Server started and ready")
-                        return True
-                except Exception:
-                    pass
-                _time.sleep(0.5)
-            print("[RAG] Server started but not ready — proceeding anyway")
-            return True
-        except Exception as e:
-            print(f"[RAG] Failed to start server: {e}")
-            _rag_process = None
-            return False
+_RAG_URL = "http://127.0.0.1:5080/context"
 
 
 def get_rag_context(query: str) -> str:
-    """Fetch formatted RAG context from rag_server, auto-starting if needed."""
+    """Fetch formatted RAG context from the shared rag_server."""
     try:
-        _ensure_rag_server()
         r = httpx.post(
-            f"{_RAG_URL}/context",
+            _RAG_URL,
             json={"query": query, "k": 10},
-            timeout=15.0
+            timeout=8.0
         )
         r.raise_for_status()
         return r.json().get("context", "")
     except Exception as e:
-        print(f"[RAG] Context fetch error: {e}")
+        print(f"[RAG] Server error: {e}")
         return ""
 
 
@@ -559,9 +491,7 @@ async def preprocess_user_input(user_input: str, image_path: str = None) -> tupl
     is_youtube = bool(re.search(yt_regex, user_input, re.IGNORECASE))
     is_image   = bool(image_path)
 
-    rag_context = ""
-    if RAG_ENABLED:
-        rag_context = await asyncio.to_thread(get_rag_context, user_input)
+    rag_context = await asyncio.to_thread(get_rag_context, user_input)
 
     media_blocks = []
     if is_youtube or is_image:
@@ -727,7 +657,7 @@ def _exec_text_commands(text: str):
             _cmd_log.append({
                 "cmd": c["cmd"],
                 "allowed": True,
-                "output": f"[EXIT ?] queued ({c['delay']}s)" if c["delay"] > 0 else "[EXIT ?] running...",
+                "output": f"⏳ queued ({c['delay']}s)" if c["delay"] > 0 else "⏳ running...",
                 "ts": ts,
             })
             if len(_cmd_log) > 100:
@@ -744,12 +674,10 @@ def _exec_text_commands(text: str):
                         cwd=BASE_DIR,
                         env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
                     )
-                    code = r.returncode
-                    body = (r.stdout or r.stderr or "(done)").strip()[:500]
-                    out = f"[EXIT {code}] {body}"
+                    out = (r.stdout or r.stderr or "(done)").strip()[:500]
                     print(f"[Marin] Ran: {c['cmd'][:80]} → {out[:100]}")
                 except Exception as e:
-                    out = f"[EXIT -1] Error: {e}"
+                    out = f"Error: {e}"
                     print(f"[Marin] Command failed: {c['cmd'][:80]} — {e}")
 
                 if _cmd_log is not None:
@@ -779,9 +707,7 @@ def _exec_text_commands(text: str):
                     cwd=BASE_DIR,
                     env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
                 )
-                code = r.returncode
-                body = (r.stdout or r.stderr or "(done)").strip()[:500]
-                out = f"[EXIT {code}] {body}"
+                out = (r.stdout or r.stderr or "(done)").strip()[:500]
                 if _cmd_log is not None:
                     for c in cmds:
                         for entry in reversed(_cmd_log):
@@ -800,7 +726,7 @@ def _exec_text_commands(text: str):
                     ts2 = datetime.datetime.now().strftime("%H:%M:%S")
                     _cmd_log.append({
                         "cmd": "[batch] ERROR",
-                        "allowed": False, "output": f"[EXIT -1] {str(e)[:300]}", "ts": ts2,
+                        "allowed": False, "output": str(e)[:300], "ts": ts2,
                     })
             finally:
                 try:

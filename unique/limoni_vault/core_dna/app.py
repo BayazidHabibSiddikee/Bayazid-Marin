@@ -7,6 +7,8 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import ollama
+from marin import main as marin_main, format_game_context_for_marin
+from bayazid import main as bayazid_main
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -15,6 +17,8 @@ templates = Jinja2Templates(directory="templates")
 UPLOAD_FOLDER = 'static/uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs('static/generated', exist_ok=True)
+
+ACTIVE_AGENT = "bayazid"
 
 # ── TIC TAC TOE GAME ENGINE (Runs in RAM, no GUI needed) ─────────────────────
 class GameSession:
@@ -86,8 +90,16 @@ async def get_index(request: Request):
     return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/chat", response_class=HTMLResponse)
-async def get_chat(request: Request):
-    return templates.TemplateResponse(request=request, name="marin_chat.html")
+async def get_chat(request: Request, agent: str = "bayazid"):
+    global ACTIVE_AGENT
+    ACTIVE_AGENT = agent
+    return templates.TemplateResponse(request=request, name="bayazid_chat.html", context={"agent": agent})
+
+@app.post("/agent/switch")
+async def switch_agent(agent: str = Form(...)):
+    global ACTIVE_AGENT
+    ACTIVE_AGENT = agent
+    return {"ok": True, "agent": agent}
 
 @app.post("/upload")
 async def upload_image(image: UploadFile = File(...)):
@@ -117,10 +129,17 @@ async def handle_message(message: str = Form(...), image: UploadFile = File(None
     # Pass the active game log to Marin so she knows the board state!
     game_context = "\n".join(game.log) if game.is_active else None
 
-    return StreamingResponse(
-        marin_main(message, image_path=image_path, game_context=game_context), 
-        media_type="text/plain"
-    )
+    if ACTIVE_AGENT == "marin":
+        return StreamingResponse(
+            marin_main(message, image_path=image_path, game_context=game_context), 
+            media_type="text/plain"
+        )
+    else:
+        # Bayazid main: (user_message, image_path=None, study_context=None, use_rag=True)
+        return StreamingResponse(
+            bayazid_main(message, image_path=image_path),
+            media_type="text/plain"
+        )
 
 # ── GAME ROUTES ───────────────────────────────────────────────────────────────
 @app.post("/game/start")
@@ -137,7 +156,6 @@ async def start_game():
     return {"board": game.board, "turn": game.turn, "log": game.log[-2:]}
 
 from games.tiktaktoe import get_game
-from marin import main as marin_main, format_game_context_for_marin
 
 @app.get("/game/tiktaktoe/state")
 async def get_tiktaktoe_state():
@@ -198,7 +216,10 @@ async def trigger_ai_move():
 
 @app.get("/memory/status")
 async def memory_status():
-    from marin import load_history
+    if ACTIVE_AGENT == "marin":
+        from marin import load_history
+    else:
+        from bayazid import load_history
     messages = load_history(limit=60)
     return {"messages": messages}
 

@@ -2,9 +2,6 @@ import os
 import re
 import json
 import asyncio
-import subprocess
-import signal
-import sys
 from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -89,18 +86,10 @@ async def handle_message(
         game = get_game()
         state = game.get_board_state() if game else None
         game_context = format_game_context_for_marin(state) if state else None
-        # Inject timer info into the message so Marin knows about active sessions
-        timer_status = timer.get_session_status()
-        msg_with_timer = message
-        if timer_status["active"]:
-            msg_with_timer = f"[Focus: {timer_status['task']} ({timer_status['elapsed_formatted']})]\n{message}"
         return StreamingResponse(
-            marin_main(msg_with_timer, image_path=image_path, game_context=game_context),
+            marin_main(message, image_path=image_path, game_context=game_context),
             media_type="text/plain"
         )
-
-    import marin
-    use_rag = marin.RAG_ENABLED
 
     clf = classify(message)
     intent = clf["intent"]
@@ -136,75 +125,12 @@ async def handle_message(
     else:
         ctx = format_study_context(json.loads(study_context)) if study_context else None
         return StreamingResponse(
-            bayazid_main(message, image_path=image_path, study_context=ctx, use_rag=use_rag),
+            bayazid_main(message, image_path=image_path, study_context=ctx),
             media_type="text/plain"
         )
 
 
-# ── QUIZ ENDPOINTS ──────────────────────────────────────────────────────
-
-def _parse_quiz_to_json(raw: str, topic: str, difficulty: str) -> dict:
-    """Parse the LLM's markdown quiz format into structured JSON."""
-    questions = []
-    blocks = re.split(r'\*\*Q\d+[:\]]+\s*', raw)
-    for block in blocks[1:]:
-        lines = block.strip().split('\n')
-        if not lines:
-            continue
-        q_text = lines[0].strip()
-        options = []
-        answer_letter = ""
-        explanation = ""
-
-        # Try normal multi-line options first
-        for line in lines[1:]:
-            line = line.strip()
-            opt_match = re.match(r'^([A-D])[\)\.]\s*(.*)', line)
-            if opt_match:
-                options.append(opt_match.group(2).strip())
-                continue
-            ans_match = re.match(r'\*\*Answer:\*\*\s*([A-D])\s*[—–-]\s*(.*)', line, re.IGNORECASE)
-            if ans_match:
-                answer_letter = ans_match.group(1).upper()
-                explanation = ans_match.group(2).strip()
-                continue
-            ans_match2 = re.match(r'\*\*Answer:\*\*\s*([A-D])', line, re.IGNORECASE)
-            if ans_match2:
-                answer_letter = ans_match2.group(1).upper()
-                rest = line[line.find(ans_match2.group(1))+1:].strip()
-                if rest.startswith('—') or rest.startswith('-'):
-                    explanation = rest[1:].strip()
-                continue
-
-        # Fallback: inline single-line options like "A) foo  B) bar  C) baz  D) qux"
-        if not options and len(lines) > 1:
-            inline = " ".join(lines[1:])
-            opts = re.findall(r'([A-D])[\)\.]\s*([^\n]*?)(?=\s*[A-D][\)\.]|\*\*Answer|\Z)', inline, re.DOTALL)
-            if len(opts) >= 2:
-                options = [o[1].strip() for o in opts[:4]]
-                ans_match = re.search(r'\*\*Answer:\*\*\s*([A-D])', inline, re.IGNORECASE)
-                if ans_match:
-                    answer_letter = ans_match.group(1).upper()
-                    expl_match = re.search(r'\*\*Answer:\*\*\s*[A-D]\s*[—–-]\s*(.*)', inline, re.IGNORECASE)
-                    if expl_match:
-                        explanation = expl_match.group(1).strip()
-
-        if q_text and options and answer_letter:
-            letter_idx = ord(answer_letter) - ord('A')
-            correct = options[letter_idx] if 0 <= letter_idx < len(options) else ""
-            questions.append({
-                "question": q_text,
-                "options": options,
-                "correct": correct,
-                "explanation": explanation,
-            })
-
-    return {
-        "topic": topic,
-        "difficulty": difficulty,
-        "questions": questions,
-    }
-
+# ── QUIZ ENDPOINT (streams the quiz as plain text) ───────────────────────
 
 @app.post("/quiz/generate")
 async def generate_quiz_endpoint(
@@ -216,24 +142,6 @@ async def generate_quiz_endpoint(
         generate_quiz(topic, difficulty, num_questions),
         media_type="text/plain"
     )
-
-
-@app.post("/quiz/generate/json")
-async def generate_quiz_json_endpoint(
-    topic: str = Form(...),
-    difficulty: str = Form("medium"),
-    num_questions: int = Form(5)
-):
-    """Collect full quiz text from LLM, parse to JSON, return interactive MCQ data."""
-    chunks = []
-    async for chunk in generate_quiz(topic, difficulty, num_questions):
-        chunks.append(chunk)
-    raw = "".join(chunks)
-    data = _parse_quiz_to_json(raw, topic, difficulty)
-    if not data["questions"]:
-        data["error"] = "Could not parse quiz. Raw output shown below."
-        data["raw"] = raw
-    return JSONResponse(data)
 
 
 # ── TIMER API ─────────────────────────────────────────────────────────────
@@ -310,100 +218,6 @@ async def set_maxtokens(tokens: int = Form(...)):
     import marin
     marin.MAX_TOKENS = max(0, min(tokens, 4096))
     return {"max_tokens": marin.MAX_TOKENS}
-
-@app.get("/settings/rag")
-async def get_rag():
-    import marin
-    alive = _rag_server_alive()
-    return {"rag_enabled": marin.RAG_ENABLED, "rag_running": alive}
-
-@app.post("/settings/rag")
-async def set_rag(enabled: str = Form(...)):
-    import marin
-    on = enabled in ("1", "true", "True", "yes")
-    marin.RAG_ENABLED = on
-    if on:
-        await asyncio.to_thread(_start_rag_server)
-    else:
-        await asyncio.to_thread(_stop_rag_server)
-    alive = _rag_server_alive()
-    return {"rag_enabled": marin.RAG_ENABLED, "rag_running": alive}
-
-
-# ── RAG SERVER PROCESS MANAGEMENT ──────────────────────────────────────────────
-
-_rag_process = None
-_rag_lock = threading.Lock()
-_RAG_BASE = "http://127.0.0.1:5080"
-
-
-def _rag_server_alive() -> bool:
-    try:
-        import httpx
-        r = httpx.get(f"{_RAG_BASE}/health", timeout=2.0)
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
-def _start_rag_server():
-    global _rag_process
-    if _rag_server_alive():
-        return
-    with _rag_lock:
-        if _rag_server_alive():
-            return
-        if _rag_process is not None and _rag_process.poll() is None:
-            return
-        try:
-            base = os.path.dirname(os.path.abspath(__file__))
-            script = os.path.join(base, "rag_server.py")
-            _rag_process = subprocess.Popen(
-                [sys.executable, script, "--port", "5080", "--max-memory-mb", "800"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            import time
-            for _ in range(30):
-                if _rag_server_alive():
-                    print("[RAG] Server started")
-                    return
-                time.sleep(0.5)
-            print("[RAG] Server launched (may take longer to index)")
-        except Exception as e:
-            print(f"[RAG] Start failed: {e}")
-            _rag_process = None
-
-
-def _stop_rag_server():
-    global _rag_process
-    # Kill tracked process
-    if _rag_process is not None:
-        try:
-            pgid = os.getpgid(_rag_process.pid)
-            os.killpg(pgid, signal.SIGTERM)
-            import time
-            time.sleep(0.5)
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            _rag_process = None
-            print("[RAG] Server stopped")
-        except ProcessLookupError:
-            _rag_process = None
-        except Exception as e:
-            print(f"[RAG] Stop error: {e}")
-    # Also pkill any orphaned rag_server instances
-    try:
-        subprocess.run(["pkill", "-f", "rag_server.py"],
-                       capture_output=True, timeout=3)
-    except Exception:
-        pass
-
-
-import atexit
-atexit.register(_stop_rag_server)
 
 
 # ── ARENA DEBATE ROUTES ─────────────────────────────────────────────────────────

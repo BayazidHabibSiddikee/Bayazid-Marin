@@ -157,26 +157,28 @@ def tool_run_command(command: str) -> str:
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     entry = {"cmd": command, "allowed": allowed, "output": "", "ts": ts}
     if not allowed:
-        entry["output"] = reason
+        entry["output"] = f"[EXIT BLOCKED] {reason}"
         _cmd_log.append(entry)
         if len(_cmd_log) > 100: _cmd_log.pop(0)
-        return f"Can't run `{command}` — {reason}."
+        return f"[EXIT BLOCKED] Can't run `{command}` — {reason}."
     try:
         r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
-        out = (r.stdout or r.stderr or "(no output)").strip()
-        if len(out) > 1500: out = out[:1500] + "\n...[truncated]"
+        code = r.returncode
+        body = (r.stdout or r.stderr or "(no output)").strip()
+        if len(body) > 1500: body = body[:1500] + "\n...[truncated]"
+        out = f"[EXIT {code}] {body}"
         entry["output"] = out
         _cmd_log.append(entry)
         if len(_cmd_log) > 100: _cmd_log.pop(0)
         return out
     except subprocess.TimeoutExpired:
-        entry["output"] = "timed out (15s)"
+        entry["output"] = "[EXIT -1] timed out (15s)"
         _cmd_log.append(entry)
-        return "Command timed out after 15 seconds."
+        return "[EXIT -1] Command timed out after 15 seconds."
     except Exception as e:
-        entry["output"] = str(e)
+        entry["output"] = f"[EXIT -1] {e}"
         _cmd_log.append(entry)
-        return f"Error: {e}"
+        return f"[EXIT -1] Error: {e}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
