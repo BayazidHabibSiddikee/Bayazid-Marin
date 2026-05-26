@@ -84,8 +84,16 @@ if __name__ == '__main__':
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--ticker', type=str, help="Ticker symbol (e.g. AAPL)")
     group.add_argument('--company', type=str, help="Company name (e.g. Tesla)")
-    args = parser.parse_args()
+    # Fallback arguments to handle AI hallucinations gracefully
+    parser.add_argument('--plot', type=str, help="Fallback plot argument")
+    parser.add_argument('--timeframe', type=str, help="Fallback timeframe argument")
+    args, unknown = parser.parse_known_args()
 
+    # If AI hallucinates multiple tickers in --plot, try to handle the first one
+    if args.plot and not args.ticker and not args.company:
+        tickers = [t.strip() for t in args.plot.split(',')]
+        args.ticker = tickers[0]
+        
     if args.ticker:
         show_stock(args.ticker.upper())
     elif args.company:

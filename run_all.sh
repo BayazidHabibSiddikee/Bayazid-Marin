@@ -7,7 +7,7 @@ echo "  Arena served at /arena on the same port."
 echo ""
 
 # Run with reload for development
-uvicorn main:app --host 0.0.0.0 --port 5069 --reload &
+uvicorn main:app --host 0.0.0.0 --port 5069 &
 
 SERVER_PID=$!
 echo "→ Unified Chat + Arena @ http://localhost:5069 (PID $SERVER_PID)"

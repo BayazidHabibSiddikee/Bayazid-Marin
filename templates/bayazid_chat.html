@@ -740,11 +740,13 @@
             <button id="voice-btn" onclick="toggleVoice()" style="font-family:monospace;font-size:.65rem;background:none;cursor:pointer;padding:3px 10px;border:1px solid #f4722433;border-radius:3px;transition:all .2s;color:#f4722444" title="Voice on/off">🔇 <span id="voice-label">OFF</span></button>
             <button id="word-limit-btn" onclick="toggleWordLimit()" style="font-family:monospace;font-size:.65rem;background:none;cursor:pointer;padding:3px 10px;border:1px solid #a3e63533;border-radius:3px;transition:all .2s;color:#a3e63588" title="Word limit">📏 <span id="wl-label">FREE</span></button>
             <button id="rag-btn" onclick="toggleRag()" style="font-family:monospace;font-size:.65rem;background:none;cursor:pointer;padding:3px 10px;border:1px solid #10b98133;border-radius:3px;transition:all .2s;color:#10b981" title="RAG knowledge toggle">📚 <span id="rag-label">RAG</span></button>
-            <button id="token-btn" onclick="toggleTokenLimit()" style="font-family:monospace;font-size:.65rem;background:none;cursor:pointer;padding:3px 10px;border:1px solid #e879f933;border-radius:3px;transition:all .2s;color:#e879f988" title="Max tokens">🎯 <span id="token-label">200T</span></button>
+            
             <button id="term-btn" onclick="toggleTermPanel()" style="font-family:monospace;font-size:.65rem;background:none;cursor:pointer;padding:3px 10px;border:1px solid #22d3ee33;border-radius:3px;transition:all .2s;color:#22d3ee88" title="Toggle terminal log">⬛ <span id="term-label">LOG</span></button>
             <div class="status-dot" title="System Operational"></div>
             <nav class="nav-links">
                 <a href="/">HOME</a>
+                <a href="/research-hub">RESEARCH</a>
+                <a href="/knowledge-hub">HUB</a>
                 <a href="/chat" class="active">CHAT</a>
                 <a href="/profile">PROFILE</a>
                 <a href="/arena" style="color:#fbbf2488;border-color:#fbbf2433" onmouseover="this.style.color='#fbbf24';this.style.borderColor='#fbbf24'" onmouseout="this.style.color='#fbbf2488';this.style.borderColor='#fbbf2433'">⚔ ARENA</a>
@@ -795,6 +797,12 @@
             </button>
             <button class="sidebar-btn" onclick="insertCommand('/timer stats')">
                 <span class="icon">📊</span> Timer Stats
+            </button>
+            <button class="sidebar-btn" onclick="location.href='/research-hub'">
+                <span class="icon">📚</span> Research Hub
+            </button>
+            <button class="sidebar-btn" onclick="location.href='/knowledge-hub'">
+                <span class="icon">🌐</span> Knowledge Hub
             </button>
             <button class="sidebar-btn" onclick="memory_clear()">
                 <span class="icon">🗑</span> Clear Memory
@@ -875,17 +883,6 @@
         </div>
     </div>
 
-    <!-- Max Tokens Modal -->
-    <div id="token-modal" style="display:none;position:fixed;inset:0;background:#0008;z-index:999;align-items:center;justify-content:center">
-        <div style="background:var(--panel);border:1px solid var(--violet);border-radius:8px;padding:24px;width:280px;text-align:center">
-            <p style="color:var(--violet);margin-bottom:12px;font-size:.9rem">Max tokens per response<br><span style="color:var(--text-dim);font-size:.75rem">0 = unlimited</span></p>
-            <input id="token-input" type="number" min="0" max="4096" value="200" style="width:100%;padding:8px;border-radius:4px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:1rem;text-align:center;margin-bottom:12px">
-            <div style="display:flex;gap:8px">
-                <button onclick="applyTokenLimit()" style="flex:1;padding:8px;background:linear-gradient(135deg,var(--purple),var(--violet-dim));border:none;border-radius:4px;color:white;cursor:pointer;font-size:.85rem">Apply</button>
-                <button onclick="document.getElementById('token-modal').style.display='none'" style="flex:1;padding:8px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);cursor:pointer;font-size:.85rem">Cancel</button>
-            </div>
-        </div>
-    </div>
 
     <!-- Terminal History Panel -->
     <div id="term-panel" style="display:none;background:var(--bg2);border-top:1px solid #22d3ee22;border-bottom:1px solid #22d3ee22;max-height:340px;overflow-y:auto;font-family:'Share Tech Mono',monospace;font-size:.75rem;padding:8px 16px;flex-shrink:0">
@@ -925,11 +922,11 @@
         let sessionStart = null;
         let sessionTask = null;
         let timerInterval = null;
-        let activeAgent = '{{ agent }}';
+        let currentAgent = '{{ agent }}';
 
         // ── AGENT SWITCHING ─────────────────────────────────────────────────────
         function switchAgent(agent) {
-            activeAgent = agent;
+            currentAgent = agent;
             const body = document.body;
             const nameEl = document.getElementById('agent-name');
             const badgeEl = document.getElementById('agent-badge');
@@ -959,7 +956,7 @@
             form.append('agent', agent);
             fetch('/agent/switch', { method: 'POST', body: form });
 
-            // Clear chat and show greeting
+            // Clear chat, show greeting, and LOAD HISTORY
             const msgs = document.getElementById('messages');
             msgs.innerHTML = '';
             if (agent === 'marin') {
@@ -967,6 +964,9 @@
             } else {
                 appendMessage('ai', '⚔ **BAYAZID HS-02 ONLINE**<br>Cognitive warfare system activated. Ready to execute. 🐸');
             }
+            
+            // Reload history for the NEW agent
+            loadRecentHistory();
         }
 
         const depths = ['quick', 'standard', 'deep'];
@@ -1046,6 +1046,7 @@
             try {
                 const form = new FormData();
                 form.append('message', buildMessageWithMode(msg));
+                form.append('agent', currentAgent); // Explicitly send agent name
                 if (attachedImage) form.append('image', attachedImage);
 
                 const res = await fetch('/message', { method: 'POST', body: form });
@@ -1202,7 +1203,7 @@
             const div = document.createElement('div');
             div.className = `msg ${role}`;
             let initials = role === 'ai' ? '⚔' : 'B';
-            if (role === 'ai' && activeAgent === 'marin') initials = '🌸';
+            if (role === 'ai' && currentAgent === 'marin') initials = '🌸';
             div.innerHTML = `
     <div class="avatar ${role === 'ai' ? 'ai' : 'user-av'}">${initials}</div>
     <div class="bubble">${content ? renderMarkdown(content) : ''}</div>`;
@@ -1232,10 +1233,6 @@
         }
 
         // ── MEMORY CLEAR ───────────────────────────────────────────────────────
-        async function memory_clear() {
-            await fetch('/memory/clear', { method: 'POST' });
-            appendMessage('ai', '🗑 Memory cleared. Fresh context.');
-        }
 
         // ── TIMER UI ───────────────────────────────────────────────────────────
         function openTimerDialog() {
@@ -1369,13 +1366,41 @@
 
         async function toggleRag() {
             ragEnabled = !ragEnabled;
-            updateRagLabel(false);
-            try {
-                const fd = new FormData(); fd.append('enabled', ragEnabled ? '1' : '0');
-                const r = await fetch('/settings/rag', { method: 'POST', body: fd });
-                const d = await r.json();
-                updateRagLabel(d.rag_running);
-            } catch(e) { updateRagLabel(false); }
+            const btn = document.getElementById('rag-btn');
+            const lbl = document.getElementById('rag-label');
+            
+            if (ragEnabled) {
+                // Show loading progress
+                let progress = 0;
+                btn.style.color = '#f59e0b';
+                btn.style.borderColor = '#f59e0b66';
+                
+                const interval = setInterval(() => {
+                    progress += Math.floor(Math.random() * 15) + 5;
+                    if (progress >= 100) {
+                        progress = 99;
+                        clearInterval(interval);
+                    }
+                    lbl.textContent = `RAG ${progress}%`;
+                }, 400);
+
+                try {
+                    const fd = new FormData(); fd.append('enabled', '1');
+                    const r = await fetch('/settings/rag', { method: 'POST', body: fd });
+                    const d = await r.json();
+                    clearInterval(interval);
+                    updateRagLabel(d.rag_running);
+                } catch(e) { 
+                    clearInterval(interval);
+                    updateRagLabel(false); 
+                }
+            } else {
+                updateRagLabel(false);
+                try {
+                    const fd = new FormData(); fd.append('enabled', '0');
+                    await fetch('/settings/rag', { method: 'POST', body: fd });
+                } catch(e) {}
+            }
         }
 
         // ── WORD LIMIT ─────────────────────────────────────────────────────────
@@ -1418,43 +1443,6 @@
                 updateWLLabel();
             } catch(e) {}
             document.getElementById('wl-modal').style.display = 'none';
-        }
-
-        // ── MAX TOKENS ─────────────────────────────────────────────────────────
-        let currentTokens = 200;
-
-        async function loadTokenLimit() {
-            try {
-                const r = await fetch('/settings/maxtokens');
-                const d = await r.json();
-                currentTokens = d.max_tokens !== undefined ? d.max_tokens : 200;
-                updateTokenLabel();
-            } catch(e) {}
-        }
-
-        function updateTokenLabel() {
-            const lbl = document.getElementById('token-label');
-            if (currentTokens > 0) {
-                lbl.textContent = currentTokens + 'T';
-            } else {
-                lbl.textContent = '∞T';
-            }
-        }
-
-        function toggleTokenLimit() {
-            document.getElementById('token-input').value = currentTokens;
-            document.getElementById('token-modal').style.display = 'flex';
-        }
-
-        async function applyTokenLimit() {
-            const val = parseInt(document.getElementById('token-input').value) || 0;
-            try {
-                const fd = new FormData(); fd.append('tokens', val);
-                await fetch('/settings/maxtokens', { method: 'POST', body: fd });
-                currentTokens = val;
-                updateTokenLabel();
-            } catch(e) {}
-            document.getElementById('token-modal').style.display = 'none';
         }
 
         // ── TERMINAL LOG ───────────────────────────────────────────────────────
@@ -1503,7 +1491,7 @@
 
 		async function loadRecentHistory() {
 		    try {
-		        const res = await fetch('/memory/status');
+		        const res = await fetch(`/memory/status?agent=${currentAgent}`);
 		        const data = await res.json();
 		        const recent = data.messages.slice(-20); // last 20 messages
 		        recent.forEach(msg => {
@@ -1519,6 +1507,14 @@
 		        });
 		    } catch (e) { console.error('[history]', e); }
 		}
+
+        async function memory_clear() {
+            if (!confirm('Clear all conversation history for this agent?')) return;
+            const fd = new FormData();
+            fd.append('agent', currentAgent);
+            await fetch('/memory/clear', { method: 'POST', body: fd });
+            document.getElementById('messages').innerHTML = '';
+        }
 
 
 		window.addEventListener('load', loadRecentHistory);
@@ -1544,9 +1540,10 @@
         setInterval(fetchTodayTotal, 60000);
         loadVoice();
         loadWordLimit();
-        loadTokenLimit();
         loadRag();
-        if (activeAgent) switchAgent(activeAgent);
+        // Set initial agent state without triggering full switch switchAgent logic if unnecessary,
+        // but switchAgent handles UI highlights so it's good to call.
+        if (currentAgent) switchAgent(currentAgent);
     </script>
 </body>
 

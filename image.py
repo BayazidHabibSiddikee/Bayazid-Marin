@@ -17,10 +17,7 @@ import time
 # MODEL CONFIGURATION — Same as bayazid.py, change in one place
 # Import from bayazid if available, otherwise define here
 # ═══════════════════════════════════════════════════════════════════════════
-try:
-    from bayazid import MODEL
-except ImportError:
-    MODEL = "moondream"
+from config import DEFAULT_MODEL as MODEL, VISION_MODEL
 
 # ── Config ─────────────────────────────────────────────────────────────────
 CHARACTER_NAME = "leo"
@@ -30,11 +27,7 @@ Speak dramatically, find patterns and beauty. Be poetic but brief."""
 
 HISTORY_MAX    = 50          # keep last 50 messages (25 turns)
 BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
-HISTORY_FILE   = os.path.join(BASE_DIR, "leo_history.json")
-
-# Vision model - cloud models may not support vision, use local fallback
-# Change this if your cloud model supports images
-VISION_MODEL = "leo"  # Local vision model - change to your preference
+HISTORY_FILE   = os.path.join(BASE_DIR, "storage", "leo_history.json")
 
 
 # ── Model setup ────────────────────────────────────────────────────────────

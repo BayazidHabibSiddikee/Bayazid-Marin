@@ -14,6 +14,10 @@ import gc
 import os
 import json
 import shutil
+import time
+import pickle
+import ctypes
+import struct
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -21,7 +25,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 
 try:
-    from langchain_community.vectorstores import FAISS
+    import faiss
     from langchain_huggingface import HuggingFaceEmbeddings
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_community.document_loaders import PyPDFLoader
@@ -45,7 +49,7 @@ except ImportError:
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 DOC_DIR   = Path(BASE_DIR) / "doc"
 CODE_DIR  = Path(BASE_DIR) / "code"
-FAISS_DIR = Path(BASE_DIR) / "faiss_db"
+FAISS_DIR = Path(BASE_DIR) / "storage" / "faiss_db"
 
 DOC_DIR.mkdir(exist_ok=True)
 CODE_DIR.mkdir(exist_ok=True)
@@ -57,28 +61,69 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# KNOWLEDGE BASE
+# KNOWLEDGE BASE  —  low-memory: FAISS mmap + lazy embedding model
 # ═══════════════════════════════════════════════════════════════════════════════
+_LIBC = None
+def _malloc_trim():
+    """Release free memory from Python's allocator back to the OS."""
+    global _LIBC
+    if _LIBC is None:
+        try:
+            _LIBC = ctypes.CDLL("libc.so.6")
+        except Exception:
+            return
+    try:
+        _LIBC.malloc_trim(0)
+    except Exception:
+        pass
+
+
+def _compact(force=False):
+    """gc.collect + malloc_trim to return memory to OS."""
+    if force:
+        gc.collect(2)
+    else:
+        gc.collect()
+    _malloc_trim()
+
+
+# Thread-count environment vars — limits PyTorch/NumPy thread pool overhead
+os.environ.setdefault("OMP_NUM_THREADS",    "1")
+os.environ.setdefault("MKL_NUM_THREADS",    "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
+
+from config import EMBEDDING_MODEL
+
+def _lazy_embeddings():
+    """Create embedding model — called on first search, not at boot."""
+    model = HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"batch_size": 32},
+    )
+    return model
+
+
 class KnowledgeBase:
     """
     Unified FAISS index over doc/ and code/.
-    Chunk metadata: source_file, source_type (doc|code), language, page.
+    Uses raw FAISS with mmap + lazy embedding loading to keep RAM low.
     """
 
-    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
     MANIFEST_PATH   = FAISS_DIR / "manifest.json"
-
-    # Prose — larger chunks, less overlap
     DOC_CHUNK_SIZE  = 450
-    DOC_OVERLAP     = 40
-    # Code — smaller chunks, more overlap (keep functions readable)
+    DOC_OVERLAP     = 30   # reduced overlap = fewer vectors
     CODE_CHUNK_SIZE = 300
-    CODE_OVERLAP    = 50
+    CODE_OVERLAP    = 40
 
     def __init__(self):
-        self.vectorstore: Optional[FAISS] = None
-        self.embeddings  = None
+        self._raw_index = None      # raw faiss.Index (mmap'd)
+        self._docstore  = None      # dict: docstore_id → Document
+        self._id_map    = None      # dict: seq_id → docstore_id
         self.manifest: Dict[str, Any] = {"indexed": [], "failed": []}
+        self._lc_vectorstore = None  # LangChain FAISS wrapper (used only during indexing)
+        self._embeddings = None
         self._boot()
 
     # ── Startup ───────────────────────────────────────────────────────────────
@@ -87,28 +132,51 @@ class KnowledgeBase:
             print("⚠️ FAISS not available — RAG disabled")
             return
 
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=self.EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"batch_size": 64},
-        )
         self._load_manifest()
+        index_file = FAISS_DIR / "index.faiss"
+        pkl_file   = FAISS_DIR / "index.pkl"
 
-        index_path = FAISS_DIR / "index.faiss"
-        if index_path.exists():
+        if index_file.exists() and pkl_file.exists():
             try:
-                self.vectorstore = FAISS.load_local(
-                    str(FAISS_DIR), self.embeddings,
-                    allow_dangerous_deserialization=True,
+                # Memory-map the FAISS index — stays on disk, OS pages in on access
+                self._raw_index = faiss.read_index(
+                    str(index_file), faiss.IO_FLAG_MMAP
                 )
+                # Load docstore from pickle
+                with open(pkl_file, "rb") as f:
+                    self._docstore, self._id_map = pickle.load(f)
                 n = len(self.manifest["indexed"])
-                print(f"✅ Knowledge base loaded: {n} files indexed")
+                print(f"✅ KB loaded (mmap): {n} files, {self._raw_index.ntotal} vectors")
             except Exception as e:
-                print(f"⚠️ Failed to load index ({e}) — rebuilding")
-                self.vectorstore = None
-                self.manifest    = {"indexed": [], "failed": []}
+                print(f"⚠️ mmap load failed ({e}) — falling back to index rebuild")
+                self._raw_index = None
+                self._docstore  = None
+                self._id_map    = None
+        else:
+            # First boot — will build from scratch
+            self._create_embeddings()
+            self._index_new_files()
+            self._unload_embeddings()
+            return
 
+        self._create_embeddings()
         self._index_new_files()
+        self._unload_embeddings()
+        _compact(force=True)
+
+    def _create_embeddings(self):
+        if self._embeddings is None:
+            self._embeddings = _lazy_embeddings()
+
+    def _unload_embeddings(self):
+        """Release the embedding model to free PyTorch RAM."""
+        if self._embeddings is not None:
+            try:
+                del self._embeddings
+            except Exception:
+                pass
+            self._embeddings = None
+        _compact(force=True)
 
     # ── Manifest ──────────────────────────────────────────────────────────────
     def _load_manifest(self):
@@ -144,12 +212,48 @@ class KnowledgeBase:
         if not new_files:
             return
         print(f"📚 Indexing {len(new_files)} new file(s)...")
+        self._create_embeddings()
         for path in new_files:
             self._index_single_file(path)
-        if self.vectorstore:
-            self.vectorstore.save_local(str(FAISS_DIR))
+        self._save_faiss()
         self._save_manifest()
+        _compact()
         print(f"✅ Done: {len(self.manifest['indexed'])} total indexed")
+
+    def _save_faiss(self):
+        """Save the raw FAISS index + docstore to disk, then reload mmap."""
+        if self._lc_vectorstore is None:
+            return
+        self._lc_vectorstore.save_local(str(FAISS_DIR))
+        # Sync raw pointers from LC wrapper before mmap reload
+        self._raw_index = self._lc_vectorstore.index
+        self._docstore  = self._lc_vectorstore.docstore
+        self._id_map    = self._lc_vectorstore.index_to_docstore_id
+        # Reload raw index with mmap (discards LC wrapper's in-RAM copy)
+        index_file = FAISS_DIR / "index.faiss"
+        pkl_file   = FAISS_DIR / "index.pkl"
+        if index_file.exists() and pkl_file.exists():
+            try:
+                self._raw_index = faiss.read_index(str(index_file), faiss.IO_FLAG_MMAP)
+                with open(pkl_file, "rb") as f:
+                    self._docstore, self._id_map = pickle.load(f)
+            except Exception as e:
+                print(f"⚠️ mmap reload failed: {e}")
+
+    # ── Build index using LangChain wrapper (easiest path for chunk→embed) ───
+    def _ensure_lc_store(self):
+        if self._lc_vectorstore is not None:
+            return
+        if self._raw_index is not None and self._docstore is not None and self._id_map is not None:
+            from langchain_community.vectorstores import FAISS as LC_FAISS
+            self._lc_vectorstore = LC_FAISS(
+                self._raw_index,
+                self._docstore,
+                self._id_map,
+                self._embeddings,
+            )
+        else:
+            self._lc_vectorstore = None
 
     # ── Loaders ───────────────────────────────────────────────────────────────
     def _load_file(self, path: Path) -> List[Document]:
@@ -234,11 +338,12 @@ class KnowledgeBase:
             if not valid:
                 raise ValueError("No valid chunks after filtering")
 
-            if self.vectorstore is None:
-                self.vectorstore = FAISS.from_documents(valid, self.embeddings)
+            if self._lc_vectorstore is None:
+                from langchain_community.vectorstores import FAISS as LC_FAISS
+                self._lc_vectorstore = LC_FAISS.from_documents(valid, self._embeddings)
             else:
                 try:
-                    self.vectorstore.add_documents(valid)
+                    self._lc_vectorstore.add_documents(valid)
                 except Exception as e:
                     print(f"  [!] Partial embed error for {name}: {e}")
 
@@ -255,24 +360,37 @@ class KnowledgeBase:
                 del documents, chunks, valid
             except Exception:
                 pass
-            gc.collect()
+            _compact()
 
     # ── Public API ────────────────────────────────────────────────────────────
     def search(self, query: str, k: int = 10,
                source_type: str = None) -> List[Dict[str, Any]]:
-        if not self.vectorstore:
+        if self._raw_index is None:
             return []
         try:
-            fetch_k = k * 3 if source_type else k
-            docs    = self.vectorstore.similarity_search(query, k=fetch_k)
+            self._create_embeddings()
+            # Embed the query
+            q_vec = self._embeddings.embed_query(query)
+            import numpy as np
+            q_np = np.array([q_vec], dtype=np.float32)
+            # Search using raw FAISS index (mmap'd, no RAM load)
+            scores, idxs = self._raw_index.search(q_np, k * 3 if source_type else k)
             results = []
-            for doc in docs:
+            for score, idx in zip(scores[0], idxs[0]):
+                if idx < 0:
+                    continue
+                doc_id  = self._id_map.get(int(idx))
+                if doc_id is None:
+                    continue
+                doc = self._docstore.search(doc_id)
+                if doc is None:
+                    continue
                 meta = doc.metadata
                 if source_type and meta.get("source_type") != source_type:
                     continue
                 results.append({
                     "content":     doc.page_content,
-                    "source":      meta.get("source_file", "Unknown"),
+                    "source":      meta.get("source_file") or meta.get("source", "Unknown"),
                     "source_type": meta.get("source_type", "doc"),
                     "language":    meta.get("language",    "text"),
                     "page":        meta.get("page",        0),
@@ -309,16 +427,16 @@ class KnowledgeBase:
 
     def add_file(self, path: Path) -> Dict[str, Any]:
         name = path.name
-        # Allow re-indexing updated files
         if name in self.manifest["indexed"]:
             self.manifest["indexed"].remove(name)
-        # Clear from failed too
         self.manifest["failed"] = [e for e in self.manifest["failed"] if e["file"] != name]
 
+        self._create_embeddings()
+        self._ensure_lc_store()
         self._index_single_file(path)
-        if self.vectorstore:
-            self.vectorstore.save_local(str(FAISS_DIR))
+        self._save_faiss()
         self._save_manifest()
+        self._unload_embeddings()
 
         success = name in self.manifest["indexed"]
         return {
@@ -419,7 +537,7 @@ async def health():
         "status":   "operational",
         "port":     5080,
         "total":    len(kb.manifest["indexed"]),
-        "ready":    kb.vectorstore is not None,
+        "ready":    kb._raw_index is not None,
         "doc_dir":  str(DOC_DIR),
         "code_dir": str(CODE_DIR),
     }
@@ -429,8 +547,8 @@ if __name__ == "__main__":
     import argparse, resource
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=5080)
-    parser.add_argument("--max-memory-mb", type=int, default=800,
-                        help="Hard RSS limit in MB — process is killed by kernel if exceeded")
+    parser.add_argument("--max-memory-mb", type=int, default=0,
+                        help="Hard RSS limit in MB (0 to disable)")
     args = parser.parse_args()
 
     if args.max_memory_mb > 0:

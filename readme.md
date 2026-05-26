@@ -146,11 +146,16 @@ Then open your browser:
 
 ---
 
-## Usage Guide
+### Configuration
 
-### Chat Mode
+You can now manage models, API keys, and server settings in `settings.json`. The application will automatically load these settings on startup.
 
-Default mode. Type anything — technical questions, architecture discussions, code problems. Bayazid responds concisely and directly. Conversation history persists across sessions (saved to `bayazid_history.json`).
+### Workspace Structure
+
+- `storage/`: Contains all persistent state (chat history, vibe state, timer sessions, and FAISS database).
+- `settings.json`: Your primary configuration file.
+- `doc/`: Place your PDFs and documents here for RAG indexing.
+- `code/`: Place your source code files here for RAG indexing.
 
 ```
 What is the difference between I2C and SPI?

@@ -52,5 +52,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Live crypto price tracker")
     parser.add_argument('--coin', type=str, default="bitcoin",
                         help="Coin id: bitcoin, ethereum, solana, etc.")
-    args = parser.parse_args()
+    parser.add_argument('--plot', type=str, help="Fallback plot argument")
+    parser.add_argument('--timeframe', type=str, help="Fallback timeframe argument")
+    args, unknown = parser.parse_known_args()
+    
+    if args.plot and not args.coin:
+        coins = [c.strip() for c in args.plot.split(',')]
+        # Map some common symbols if needed, or assume they are proper ids
+        coin_map = {'ETH': 'ethereum', 'BTC': 'bitcoin', 'SOL': 'solana'}
+        args.coin = coin_map.get(coins[0].upper(), coins[0])
+
     run(args.coin.lower().strip())

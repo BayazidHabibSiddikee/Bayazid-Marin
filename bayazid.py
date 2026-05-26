@@ -17,10 +17,7 @@ from datetime import datetime
 from typing import Optional, AsyncIterator, Dict, Any, List
 from pathlib import Path
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MODEL CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-MODEL = "gemma4:31b-cloud"
+from config import DEFAULT_MODEL as MODEL, EMBEDDING_MODEL
 
 # ── RAG imports ───────────────────────────────────────────────────────────────
 try:
@@ -86,6 +83,19 @@ OUTPUT FORMAT (when appropriate):
 5. Optimization
 6. Final Recommendation
 
+[KNOWLEDGE HUB TOOLS]
+You have access to advanced tools for searching books (PDFs), scraping web pages,
+checking real-time weather/humidity, and monitoring flood data (NASA EONET).
+- Use `search_pdfs` to find technical documentation or textbooks for the student.
+- Use `search_web` to supplement your internal knowledge with current technical data.
+- Use `get_weather` or `create_map` to assist with environmental planning or logistics.
+
+[VAULT PLAYGROUND]
+You have a private vault at `./unique/bayazid_vault/`.
+- Use `manage_vault` to write logs, technical findings, or 'memory shards' you want to persist across sessions.
+- If you find information that is critical for the user (Bayazid) to remember or for your own long-term context, SAVE IT to your vault.
+- This is your playground — feel free to create files and organize your technical thoughts there.
+
 MOTTO: "Execution over illusion. Systems over chaos. Growth over dependency." 🐸
 """
 
@@ -105,12 +115,12 @@ Book Library: 60+ technical books on ML, embedded systems, robotics, hacking, Li
 # HISTORY FILE
 # ═══════════════════════════════════════════════════════════════════════════════
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
-HISTORY_FILE = os.path.join(BASE_DIR, "bayazid_history.json")
+HISTORY_FILE = os.path.join(BASE_DIR, "storage", "bayazid_history.json")
 HISTORY_MAX  = 50
 
 # Shared RAG paths — same as marin.py
 DOC_DIR   = os.path.join(BASE_DIR, "doc")
-FAISS_DIR = os.path.join(BASE_DIR, "faiss_db")
+FAISS_DIR = os.path.join(BASE_DIR, "storage", "faiss_db")
 
 os.makedirs(DOC_DIR,   exist_ok=True)
 os.makedirs(FAISS_DIR, exist_ok=True)
@@ -125,7 +135,7 @@ class BookRAG:
     Reads the same faiss_db/ and doc/ as marin.py — single index, both engines.
     """
 
-    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+    EMBEDDING_MODEL = EMBEDDING_MODEL
 
     def __init__(self, doc_dir: str = None, faiss_dir: str = None):
         self.doc_dir   = Path(doc_dir   or DOC_DIR)
@@ -477,59 +487,56 @@ rag = _RemoteRAG()
 # TIMER & SESSION TRACKING
 # ═══════════════════════════════════════════════════════════════════════════════
 
-TIMER_FILE = os.path.join(BASE_DIR, "timer_sessions.json")
+import database
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIMER & SESSION TRACKING
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class StudyTimer:
     def __init__(self):
-        self.sessions: List[Dict[str, Any]] = []
-        self.current_session: Optional[Dict[str, Any]] = None
-        self._load_sessions()
+        self.current_id: Optional[int] = None
+        self.current_task: Optional[str] = None
+        self.start_time: float = 0
 
-    def _load_sessions(self):
-        if os.path.exists(TIMER_FILE):
-            try:
-                with open(TIMER_FILE, "r") as f:
-                    self.sessions = json.load(f)
-            except Exception:
-                self.sessions = []
+    def start_session(self, task: str):
+        self.current_task = task
+        self.start_time = time.time()
+        self.current_id = database.start_timer(task)
+        print(f"⏱️ Focus session started: {task}")
 
-    def _save_sessions(self):
-        try:
-            with open(TIMER_FILE, "w") as f:
-                json.dump(self.sessions, f, indent=2)
-        except Exception as e:
-            print(f"⚠️ Timer save error: {e}")
-
-    def end_session(self) -> Optional[Dict[str, Any]]:
-        if not self.current_session:
+    def end_session(self, status: str = "completed") -> Optional[Dict[str, Any]]:
+        if not self.current_id:
             return None
-        self.current_session["end_time"] = time.time()
-        self.current_session["duration"] = (
-            self.current_session["end_time"] - self.current_session["start_time"]
-        )
-        self.current_session["status"] = "completed"
-        self.sessions.append(self.current_session.copy())
-        completed = self.current_session
-        self.current_session = None
-        return completed
+        
+        database.end_timer(self.current_id, status)
+        elapsed = time.time() - self.start_time
+        task = self.current_task
+        
+        self.current_id = None
+        self.current_task = None
+        self.start_time = 0
+        
+        return {"task": task, "elapsed_seconds": int(elapsed), "status": status}
 
     def get_session_status(self) -> Dict[str, Any]:
-        if not self.current_session:
+        if not self.current_id:
             return {"active": False, "total_today": self._get_today_total()}
-        elapsed = time.time() - self.current_session["start_time"]
+        elapsed = time.time() - self.start_time
         return {
             "active":            True,
-            "task":              self.current_session["task"],
+            "task":              self.current_task,
             "elapsed_seconds":   int(elapsed),
             "elapsed_formatted": self._format_duration(elapsed),
             "total_today":       self._get_today_total() + elapsed,
         }
 
     def _get_today_total(self) -> float:
+        sessions = database.get_timer_stats()
         today = datetime.now().date()
         return sum(
-            s["duration"] for s in self.sessions
-            if datetime.fromisoformat(s["start_datetime"]).date() == today
+            (s["duration_minutes"] or 0) * 60 for s in sessions
+            if datetime.fromisoformat(s["start_time"]).date() == today
         )
 
     @staticmethod
@@ -543,75 +550,49 @@ class StudyTimer:
 
     def get_stats(self) -> Dict[str, Any]:
         today_total = self._get_today_total()
-        if self.current_session:
-            today_total += time.time() - self.current_session["start_time"]
+        if self.current_id:
+            today_total += time.time() - self.start_time
+        
+        sessions = database.get_timer_stats()
         today = datetime.now().date()
         return {
-            "total_sessions":       len(self.sessions),
-            "active_session":       self.current_session is not None,
+            "total_sessions":       len(sessions),
+            "active_session":       self.current_id is not None,
             "today_total_seconds":  int(today_total),
             "today_total_formatted":self._format_duration(today_total),
             "sessions_today":       sum(
-                1 for s in self.sessions
-                if datetime.fromisoformat(s["start_datetime"]).date() == today
+                1 for s in sessions
+                if datetime.fromisoformat(s["start_time"]).date() == today
             ),
         }
-
 
 timer = StudyTimer()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CONVERSATION MEMORY  (file-persisted)
+# CONVERSATION MEMORY  (SQL-persisted)
 # ═══════════════════════════════════════════════════════════════════════════════
 class ConversationMemory:
-    """Persistent JSON conversation history — last 50 messages."""
+    """SQL conversation history — last 50 messages."""
 
-    def __init__(self, max_messages: int = HISTORY_MAX, history_file: str = HISTORY_FILE):
+    def __init__(self, max_messages: int = HISTORY_MAX):
         self.max_messages = max_messages
-        self.history_file = history_file
-        self.messages: List[Dict[str, str]] = []
-        self._load_from_file()
-
-    def _load_from_file(self):
-        if os.path.exists(self.history_file):
-            try:
-                with open(self.history_file, "r", encoding="utf-8") as f:
-                    self.messages = json.load(f)
-                print(f"📜 Loaded {len(self.messages)} messages from history")
-            except Exception as e:
-                print(f"⚠️ Failed to load history: {e}")
-                self.messages = []
-
-    def _save_to_file(self):
-        try:
-            trimmed = self.messages[-self.max_messages:]
-            with open(self.history_file, "w", encoding="utf-8") as f:
-                json.dump(trimmed, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"⚠️ Failed to save history: {e}")
 
     def add(self, role: str, content: str):
-        self.messages.append({"role": role, "content": content})
-        if len(self.messages) > self.max_messages:
-            self.messages = self.messages[-self.max_messages:]
-        self._save_to_file()
+        database.save_message("bayazid", role, content)
 
     def get(self) -> List[Dict[str, str]]:
-        return self.messages.copy()
+        return database.get_history("bayazid", limit=self.max_messages)
 
     def clear(self):
-        self.messages = []
-        if os.path.exists(self.history_file):
-            os.remove(self.history_file)
-        print("📜 History cleared")
+        database.clear_history("bayazid")
 
     def get_stats(self) -> Dict[str, Any]:
+        history = self.get()
         return {
-            "total_messages": len(self.messages),
+            "total_messages": len(history),
             "max_messages":   self.max_messages,
-            "file_path":      self.history_file,
-            "file_exists":    os.path.exists(self.history_file),
+            "backend":        "SQLite",
         }
 
 
@@ -620,15 +601,8 @@ memory = ConversationMemory()
 
 # Public history helpers so arena.py can call load_history() the same way as marin.py
 def load_history(limit: int = 50) -> List[Dict[str, str]]:
-    """Return the last N messages from bayazid's history file."""
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                history = json.load(f)
-            return history[-limit:]
-        except Exception:
-            pass
-    return []
+    """Return the last N messages from bayazid's history."""
+    return database.get_history("bayazid", limit=limit)
 
 
 def save_to_history(user_msg: str, bayazid_reply: str):
@@ -665,9 +639,23 @@ async def main(
     user_message: str,
     image_path: Optional[str] = None,
     study_context: Optional[str] = None,
-    use_rag: bool = True,
+    use_rag: bool = False, # Default to false
 ) -> AsyncIterator[str]:
+    from utils.agent_logic import preprocess_input, execute_text_commands
+    
+    # Yield early signal to prevent timeout
+    yield " "
+
+    # Preprocess using shared logic
+    prep = await preprocess_input(user_message, image_path=image_path, rag_enabled=use_rag, agent_name="bayazid")
+    enriched_prompt = prep["enriched_prompt"]
+    classification  = prep["classification"]
+
     context_parts = [BASE_CHARACTER, USER_CONTEXT]
+
+    now = datetime.now()
+    time_str = now.strftime("%A, %B %d, %Y | %I:%M %p")
+    context_parts.append(f"\n[CURRENT TIME]\n{time_str}")
 
     timer_status = timer.get_session_status()
     if timer_status["active"]:
@@ -677,30 +665,36 @@ async def main(
             f"Elapsed: {timer_status['elapsed_formatted']}\n"
             f"Today Total: {timer._format_duration(timer_status['total_today'])}"
         )
+    else:
+        context_parts.append(
+            f"\n[FOCUS STATUS]\n"
+            f"Currently Idle.\n"
+            f"Today's Total Focus: {timer._format_duration(timer_status['total_today'])}"
+        )
 
     if study_context:
         context_parts.append(f"\n[STUDY CONTEXT]\n{study_context}")
 
-    if use_rag and not image_path:
-        book_context = await asyncio.to_thread(rag.get_context_for_teaching, user_message, 10)
-        if book_context:
-            context_parts.append(book_context)
-            context_parts.append(
-                "\n[INSTRUCTION] Use the book excerpts above when relevant. "
-                "Cite sources like: 'According to [Book Name]...'"
-            )
+    # Enriched prompt already contains RAG and Media context if applicable
+    context_parts.append(enriched_prompt)
 
     messages = [{"role": "system", "content": "\n\n".join(context_parts)}]
     messages.extend(memory.get())
 
     if image_path:
+        # Some models handle images better in user messages
         messages.append({
             "role":    "user",
             "content": user_message,
             "images":  [image_path],
         })
     else:
-        messages.append({"role": "user", "content": user_message})
+        # user_message is already part of enriched_prompt usually, 
+        # but we need to keep the user role for history consistency.
+        # Actually enriched_prompt ends with "USER'S MESSAGE: ..."
+        # So we can just use the enriched prompt as the last user message if we want, 
+        # or keep system context separate.
+        pass
 
     try:
         response_chunks: List[str] = []
@@ -711,6 +705,9 @@ async def main(
         full_response = "".join(response_chunks)
         memory.add("user", user_message)
         memory.add("assistant", full_response)
+        
+        # Execute any commands found in the response
+        execute_text_commands(full_response, BASE_DIR)
 
     except Exception as e:
         yield f"[ERROR] {str(e)}"
@@ -977,7 +974,7 @@ async def handle_timer_command(command: str, task: str = "") -> str:
         return (
             f"⚔️ **SESSION COMPLETED**\n"
             f"Task: {session['task']}\n"
-            f"Duration: {timer._format_duration(session['duration'])}\n"
+            f"Duration: {timer._format_duration(session['elapsed_seconds'])}\n"
             f"Well executed. 🐸"
         )
     elif command == "status":

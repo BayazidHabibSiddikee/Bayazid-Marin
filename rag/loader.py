@@ -7,7 +7,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 
 DOC_DIR   = "doc"
-FAISS_DIR = "faiss_db"
+FAISS_DIR = "storage/faiss_db"
 MANIFEST  = os.path.join(FAISS_DIR, "manifest.json")
 
 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")

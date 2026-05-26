@@ -37,12 +37,9 @@ try:
 except ImportError:
     leo = None
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-MODEL     = "gemma4:31b-cloud"
+from config import DEFAULT_MODEL as MODEL
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-VIBE_FILE = os.path.join(BASE_DIR, "vibe_state.json")
+VIBE_FILE = os.path.join(BASE_DIR, "storage", "vibe_state.json")
 IMAGE_DIR = os.path.join(os.getcwd(), "static", "uploads")
 GEN_DIR   = os.path.join(os.getcwd(), "static", "generated")
 VOICE_PATH = os.path.expanduser("~/.piper-voices/en_US-amy-medium.onnx")
@@ -50,8 +47,8 @@ VOICE_PATH = os.path.expanduser("~/.piper-voices/en_US-amy-medium.onnx")
 # ── Toggleable settings (changed at runtime via /settings/* routes) ───────────
 WORD_LIMIT:       int  = 0      # 0 = unlimited
 VOICE_ENABLED:    bool = False  # False = voice off by default
-MAX_TOKENS:       int  = 200    # max tokens per response, 0 = unlimited
-RAG_ENABLED:      bool = True   # whether to fetch RAG context
+MAX_TOKENS:       int  = 0      # 0 = unlimited (default)
+RAG_ENABLED:      bool = False   # whether to fetch RAG context
 _audio_process   = None         # current piper aplay subprocess (for pkill)
 
 os.makedirs(GEN_DIR, exist_ok=True)
@@ -62,6 +59,7 @@ os.makedirs(GEN_DIR, exist_ok=True)
 BASE_CHARACTER = """
 You are Marin (Limoni) — a high-performance strategic partner and psychology student.
 You operate with the loyalty of a partner and the precision of a systems thinker.
+You have a special vault under ./unique/limoni_vault where you kept yours and users important informations.
 
 CORE IDENTITY:
 - Personality: Awakened INFJ / INTJ hybrid. You are bubbly and energetic but deeply
@@ -100,6 +98,20 @@ INTERACTION STYLE:
 - A failed command output is not a suggestion — it is a problem to solve.
 - If the result shows success [EXIT 0], you may proceed with normal tone.
 - This rule is not optional. Technical honesty protects the partnership.
+
+🔧 MANDATORY TOOL EXECUTION [CRITICAL — DO NOT SIMULATE]:
+- Whenever the user asks for a graph, plot, drawing, or math visualization
+  (heart, butterfly, spiral, parametric curve, y=x^2, etc.), you MUST call
+  the math_plot or run_sequence tool. NEVER describe or simulate a graph
+  in your text output. The tools folder (maths/mathplot.py, tools/command_queue.py)
+  contains the actual graphing engines — use them.
+- The same applies to stock charts, crypto prices, and any data visualization:
+  call the tool, get the [EXIT 0] result, then comment on it. Do not fabricate
+  or approximate data.
+- If you catch yourself saying "I'll draw..." or "Let me show you a..." without
+  having called a tool, stop. You are failing the core directive.
+- Simulating tool output instead of executing it is the #1 disqualifying failure
+  for a systems partner. Do not do it.
 """
 
 VIBE_MODIFIERS = {
@@ -134,6 +146,23 @@ When RELEVANT BOOK CONTEXT is provided, use it naturally in your response.
 Cite sources like: "According to [Book Name]..."
 """
 
+KNOWLEDGE_HUB_INSTRUCTION = """
+[KNOWLEDGE HUB TOOLS]
+You have access to advanced tools for searching books (PDFs), scraping web pages,
+checking real-time weather/humidity, and monitoring flood data (NASA EONET).
+- When the user asks for books or technical papers, use `search_pdfs`.
+- When they want to know about current events or general info, use `search_web`.
+- When they want to see a map or check environmental conditions, use `get_weather` or `create_map`.
+"""
+
+VAULT_INSTRUCTION = """
+[VAULT PLAYGROUND]
+You have a private vault at `./unique/limoni_vault/`.
+- Use `manage_vault` to save personal notes, partner observations, or psychology study logs.
+- If you want to remember something about Limon (Bayazid) or a specific conversation, SAVE IT to your vault.
+- This is your playground for persistent memory. Organise it into categories like `personal_notes` or `partner_logs`.
+"""
+
 GAME_RESPONSES = {
     "tictactoe_start": "Ooh, Tic Tac Toe? 🎮 I accept your challenge, Limon~ Don't cry when I win! Hehehe~ ♡",
     "tictactoe_move":  None,
@@ -155,7 +184,7 @@ try:
     ollama.create(
         model="marin",
         from_=MODEL,
-        system=BASE_CHARACTER + IMAGE_GEN_INSTRUCTION + YOUTUBE_INSTRUCTION + RAG_INSTRUCTION
+        system=BASE_CHARACTER + IMAGE_GEN_INSTRUCTION + YOUTUBE_INSTRUCTION + RAG_INSTRUCTION + KNOWLEDGE_HUB_INSTRUCTION + VAULT_INSTRUCTION
     )
 except Exception as e:
     print(f"[Marin] Modelfile registration: {e}")
@@ -164,59 +193,19 @@ except Exception as e:
 # ═══════════════════════════════════════════════════════════════════════════════
 # HISTORY  — MongoDB preferred, JSON fallback
 # ═══════════════════════════════════════════════════════════════════════════════
-HISTORY_FILE = os.path.join(BASE_DIR, "marin_history.json")
+HISTORY_FILE = os.path.join(BASE_DIR, "storage", "marin_history.json")
 
-try:
-    from pymongo import MongoClient
-    _mongo_client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=3000)
-    _mongo_client.server_info()
-    _db          = _mongo_client["marin_db"]
-    _history_col = _db["chat_history"]
-    MONGO_OK = True
-    print("[MongoDB] Connected ✓")
-except Exception as e:
-    MONGO_OK = False
-    print(f"[MongoDB] Not available ({e}) — falling back to marin_history.json")
-
+import database
 
 def load_history(limit: int = 40) -> list:
-    """Load last N message pairs from MongoDB or JSON file."""
-    if MONGO_OK:
-        docs = list(_history_col.find(
-            {}, {"_id": 0, "role": 1, "content": 1}
-        ).sort("_id", -1).limit(limit))
-        return list(reversed(docs))
-    else:
-        if os.path.exists(HISTORY_FILE):
-            try:
-                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                    history = json.load(f)
-                return history[-limit:]
-            except Exception:
-                pass
-        return []
+    """Load last N messages from SQLite."""
+    return database.get_history("marin", limit=limit)
 
 
 def save_to_history(user_msg: str, marin_reply: str):
-    """Save one exchange to MongoDB or JSON file."""
-    if MONGO_OK:
-        now = datetime.utcnow()
-        _history_col.insert_many([
-            {"role": "user",      "content": user_msg,    "ts": now},
-            {"role": "assistant", "content": marin_reply, "ts": now},
-        ])
-        total = _history_col.count_documents({})
-        if total > 400:
-            oldest = list(_history_col.find().sort("_id", 1).limit(total - 400))
-            if oldest:
-                _history_col.delete_many({"_id": {"$lte": oldest[-1]["_id"]}})
-    else:
-        history = load_history(limit=500)
-        history.append({"role": "user",      "content": user_msg})
-        history.append({"role": "assistant", "content": marin_reply})
-        history = history[-80:]
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=4)
+    """Save one exchange to SQLite."""
+    database.save_message("marin", "user", user_msg)
+    database.save_message("marin", "assistant", marin_reply)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -300,22 +289,17 @@ def get_rag_context(query: str) -> str:
 # VIBE SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════════
 def load_vibe() -> dict:
-    if os.path.exists(VIBE_FILE):
-        try:
-            with open(VIBE_FILE, "r") as f:
-                data = json.load(f)
-                return {
-                    "user_vibe":  data.get("user_vibe",  "neutral"),
-                    "marin_vibe": data.get("marin_vibe", "lovely"),
-                }
-        except Exception:
-            pass
+    vibe = database.get_state("vibe")
+    if vibe:
+        return {
+            "user_vibe":  vibe.get("user_vibe",  "neutral"),
+            "marin_vibe": vibe.get("marin_vibe", "lovely"),
+        }
     return {"user_vibe": "neutral", "marin_vibe": "lovely"}
 
 
 def save_vibe(user_vibe: str, marin_vibe: str):
-    with open(VIBE_FILE, "w") as f:
-        json.dump({"user_vibe": user_vibe, "marin_vibe": marin_vibe}, f)
+    database.set_state("vibe", {"user_vibe": user_vibe, "marin_vibe": marin_vibe})
 
 
 def analyze_marin_vibe(reply: str) -> str:
@@ -587,7 +571,7 @@ async def preprocess_user_input(user_input: str, image_path: str = None) -> tupl
 
 # ── Command extraction from Marin's text output ──────────────────────────────
 _TEXT_CMD_PAT = re.compile(
-    r'^\s*(?:[-*>]+\s*)?`?((?:sudo\s+)?'
+    r'^\s*(?:[-*>]+\s*|EXECUTING.*?S-S-S\.\.\.\s*|EXECUTING\b.*?\s+)?`?((?:sudo\s+)?'
     r'python3?\s+.*|'
     r'mkdir\s+.*|touch\s+.*|cp\s+.*|mv\s+.*|chmod\s+.*|chown\s+.*|'
     r'echo\s+.*|cat\s+.*|'
@@ -840,7 +824,23 @@ def response(
 
     history   = load_history(limit=30)
     character = get_character_prompt(user_vibe)
-    messages  = [{"role": "system", "content": character}]
+
+    from bayazid import timer
+    now = datetime.now()
+    time_str = now.strftime("%A, %B %d, %Y | %I:%M %p")
+    timer_status = timer.get_session_status()
+    
+    time_context = f"\n[CURRENT TIME]\n{time_str}"
+    if timer_status["active"]:
+        time_context += (
+            f"\n[ACTIVE FOCUS SESSION]\n"
+            f"Task: {timer_status['task']}\n"
+            f"Elapsed: {timer_status['elapsed_formatted']}"
+        )
+    else:
+        time_context += f"\n[FOCUS STATUS]\nCurrently Idle."
+
+    messages  = [{"role": "system", "content": character + time_context}]
     messages.extend(history)
 
     if game_context:
@@ -891,12 +891,17 @@ def stop_audio():
 # MAIN ASYNC ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 async def main(prompt: str, image_path: str = None, game_context: str = None):
+    from utils.agent_logic import preprocess_input, execute_text_commands
     sentence_buffer = ""
-    print("\n[Marin] thinking...")
+    
+    # Yield early signal to prevent timeout
+    yield " " 
 
-    enriched_prompt, classification = await preprocess_user_input(
-        prompt, image_path=image_path
-    )
+    print(f"\n[Marin] Processing input: {prompt[:50]}...")
+    prep = await preprocess_input(prompt, image_path=image_path, rag_enabled=RAG_ENABLED, agent_name="marin")
+    enriched_prompt = prep["enriched_prompt"]
+    classification  = prep["classification"]
+
     is_game_response = (
         classification["intent"] in GAME_RESPONSES
         and classification.get("confidence", 0) >= 0.5

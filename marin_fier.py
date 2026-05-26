@@ -88,6 +88,39 @@ class RunSequenceInput(BaseModel):
         )
     )
 
+class WeatherInput(BaseModel):
+    city: str = Field(default="Dhaka", description="City name to fetch weather and humidity for")
+
+class MapInput(BaseModel):
+    city: str = Field(default="Dhaka", description="City name to center the environmental (weather/flood) map on")
+    destination: Optional[str] = Field(default=None, description="Optional destination city to calculate a route from the primary city")
+
+class SearchInput(BaseModel):
+    query: str = Field(description="Search query for web searching")
+    max_results: int = Field(default=5, description="Maximum number of results to return")
+
+class SearchPDFInput(BaseModel):
+    topic: str = Field(description="Topic to find PDF books or research papers for")
+
+class ScrapeInput(BaseModel):
+    url: str = Field(description="URL of the webpage to scrape content from")
+
+class VaultInput(BaseModel):
+    action: str = Field(description="Action: 'write', 'read', 'list', 'delete'")
+    filename: Optional[str] = Field(default=None, description="Name of the file (e.g. 'memory_shard_01.txt')")
+    content: Optional[str] = Field(default=None, description="Content to write to the file")
+    category: str = Field(default="misc", description="Folder/category: 'personal_notes', 'technical_logs', 'memory_shards', etc.")
+
+class PinPlacesInput(BaseModel):
+    city: str = Field(default="Dhaka", description="City name to find and pin best places in")
+    query: str = Field(default="tourist attraction", description="Type of places to find (e.g. 'cafes', 'museums', 'best places')")
+
+class BanglaInput(BaseModel):
+    pass
+
+class VPAInput(BaseModel):
+    command: Optional[str] = Field(None, description="Optional command to pass to the VPA assistant.")
+
 class NoInput(BaseModel):
     pass   # tools that need no parameters
 
@@ -137,7 +170,16 @@ _KNOWN_SCRIPTS: dict[str, str] = {
     "run_all":        "bash run_all.sh",
     "mathplot":       "python3 maths/mathplot.py",
     "stock":          "python3 tools/stock.py",
+    "stock_tracker":  "python3 tools/stock.py",
     "crypto":         "python3 tools/crypto.py",
+    "crypto_tracker": "python3 tools/crypto.py",
+    "map":            "python3 tools/knowledge_hub.py",
+    "weather":        "python3 tools/knowledge_hub.py",
+    "knowledge_hub":  "python3 tools/knowledge_hub.py",
+    "research_hub":   "python3 tools/knowledge_hub.py",
+    "bangla":         "python3 tools/bangla.py",
+    "vpa":            "python3 tools/vpa.py",
+    "alexa":          "python3 tools/vpa.py",
 }
 _KNOWN_SCRIPT_KEYS: set[str] = set(_KNOWN_SCRIPTS.keys())
 
@@ -283,7 +325,7 @@ def tool_play_wordgame() -> str:
     return "Word scramble game is starting."
 
 def tool_draw_me() -> str:
-    err = _popen("tools/draw_me.py")
+    err = _popen("tools/draw.py")
     if err: return err
     return "Draw-me tool launched. It will take a webcam photo and render it as a turtle drawing."
 
@@ -295,10 +337,16 @@ def tool_take_screenshot() -> str:
 def tool_math_plot(expression: str) -> str:
     """Launch the math equation plotter to draw parametric curves."""
     import shlex
-    args = shlex.split(expression)
+    # Strip leading verbs like "draw", "plot", "graph", "show me"
+    cleaned = re.sub(r'^(?:draw|plot|graph|show)\s+(?:me\s+)?(?:a\s+)?', '', expression, flags=re.IGNORECASE).strip()
+    # If it starts with '-', treat as explicit CLI flags (e.g. '-x r*cos(t) -y r*sin(t)')
+    if cleaned.startswith('-'):
+        args = shlex.split(cleaned)
+    else:
+        args = [cleaned]  # single arg → preset lookup or NLP mode
     err = _popen("maths/mathplot.py", args)
     if err: return err
-    return f"Math plotter launched for: '{expression}'. CNC simulation window opening."
+    return f"[EXIT ?] Math plotter launched for: '{cleaned}' (CNC simulation window opening)."
 
 
 def tool_run_sequence(commands: str) -> str:
@@ -393,6 +441,91 @@ def tool_run_sequence(commands: str) -> str:
             pass
 
 
+# ── Knowledge Hub Tools ──────────────────────────────────────────────────────
+
+def tool_get_weather(city: str = "Dhaka") -> str:
+    from tools.knowledge_hub import get_weather_data
+    data = get_weather_data(city)
+    if "error" in data:
+        return f"Weather Error: {data['error']}"
+    return (
+        f"Weather in {data['city']}: {data['temperature']}°C, "
+        f"Humidity: {data['humidity']}%, Wind: {data['windspeed']} km/h. "
+        f"Recorded at: {data['time']}"
+    )
+
+def tool_create_map(city: str = "Dhaka", destination: str = None) -> str:
+    from tools.knowledge_hub import create_integrated_hub_map
+    res = create_integrated_hub_map(city, destination)
+    if isinstance(res, str) and res.startswith("Error"):
+        return res
+    # Launch Knowledge Hub dashboard in browser
+    url = f"http://localhost:5069/knowledge-hub"
+    subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    msg = f"Knowledge Hub Dashboard opened for {city}."
+    if destination:
+        msg += f" Routing to {destination} added."
+    return msg
+
+def tool_search_web(query: str, max_results: int = 5) -> str:
+    from tools.knowledge_hub import search_web
+    results = search_web(query, max_results)
+    if isinstance(results, dict) and "error" in results:
+        return f"Search Error: {results['error']}"
+    formatted = [f"- {r['title']}: {r['href']}\n  {r['body']}" for r in results]
+    return f"Web Search Results for '{query}':\n\n" + "\n\n".join(formatted)
+
+def tool_search_pdfs(topic: str) -> str:
+    from tools.knowledge_hub import search_pdfs
+    results = search_pdfs(topic)
+    if isinstance(results, dict) and "error" in results:
+        return f"PDF Search Error: {results['error']}"
+    
+    formatted = [f"- {r['title']}: {r['href']}" for r in results]
+    # Suggest opening the hub
+    msg = f"PDF/Book Search Results for '{topic}':\n\n" + "\n".join(formatted[:5])
+    msg += f"\n\n(You can see more results at http://localhost:5069/research-hub)"
+    return msg
+
+def tool_scrape_content(url: str) -> str:
+    from tools.knowledge_hub import scrape_content
+    try:
+        content = scrape_content(url)
+        return f"Scraped content from {url}:\n\n{content[:2000]}..."
+    except Exception as e:
+        return f"Scraping error: {e}"
+
+def tool_pin_places(city: str = "Dhaka", query: str = "tourist attraction") -> str:
+    from tools.knowledge_hub import search_places_in_city, create_integrated_hub_map
+    pins = search_places_in_city(city, query)
+    if not pins:
+        return f"Could not find any '{query}' in {city}."
+    
+    res = create_integrated_hub_map(city, pins=pins)
+    # Launch Knowledge Hub dashboard in browser
+    url = f"http://localhost:5069/knowledge-hub"
+    subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    msg = f"Pinned {len(pins)} '{query}' in {city} on the map."
+    return msg
+
+def tool_bangla_translator() -> str:
+    err = _popen("tools/bangla.py")
+    if err: return err
+    return "Bangla voice translator launched in a new terminal/session."
+
+def tool_vpa_assistant(command: str = None) -> str:
+    args = [command] if command else []
+    err = _popen("tools/vpa.py", args)
+    if err: return err
+    return "Virtual Personal Assistant (Alexa) launched."
+
+def tool_manage_vault(action: str, filename: str = None, content: str = None, category: str = "misc") -> str:
+    # NOTE: This is a placeholder; the actual call happens in execute_tool()
+    # where the agent_name is available.
+    return "Vault operation triggered."
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STRUCTURED TOOLS — bind schemas to callables
 # ══════════════════════════════════════════════════════════════════════════════
@@ -485,19 +618,73 @@ TOOLS = [
         ),
         args_schema=RunSequenceInput,
     ),
+    StructuredTool.from_function(
+        func=tool_get_weather, name="get_weather",
+        description="Fetch current weather, temperature, and humidity for a city.",
+        args_schema=WeatherInput,
+    ),
+    StructuredTool.from_function(
+        func=tool_create_map, name="create_map",
+        description="Generate an interactive environmental map showing weather and flood data.",
+        args_schema=MapInput,
+    ),
+    StructuredTool.from_function(
+        func=tool_search_web, name="search_web",
+        description="Search the web for information using DuckDuckGo.",
+        args_schema=SearchInput,
+    ),
+    StructuredTool.from_function(
+        func=tool_search_pdfs, name="search_pdfs",
+        description="Specialized search for PDF books, research papers, and technical documents.",
+        args_schema=SearchPDFInput,
+    ),
+    StructuredTool.from_function(
+        func=tool_scrape_content, name="scrape_content",
+        description="Scrape and extract text content from a specific URL. Useful for reading articles or documentation.",
+        args_schema=ScrapeInput,
+    ),
+    StructuredTool.from_function(
+        func=tool_pin_places, name="pin_places",
+        description="Find and pin 'best places', tourist spots, or specific venues (cafes, etc.) in a city on the interactive map.",
+        args_schema=PinPlacesInput,
+    ),
+    StructuredTool.from_function(
+        func=tool_bangla_translator, name="bangla_translator",
+        description="Launch Bangla voice translator. Use when user wants to speak or translate Bangla.",
+        args_schema=BanglaInput,
+    ),
+    StructuredTool.from_function(
+        func=tool_vpa_assistant, name="vpa_assistant",
+        description="Launch the Virtual Personal Assistant (Alexa) for interactive tasks, games, or information.",
+        args_schema=VPAInput,
+    ),
+    StructuredTool.from_function(
+        func=tool_manage_vault, name="manage_vault",
+        description=(
+            "Interact with your private playground vault in ./unique/. "
+            "Actions: 'write' (save info to remember later), 'read' (fetch saved info), "
+            "'list' (see what files you have), 'delete' (remove file). "
+            "Use this for long-term memory or storing technical/personal notes. "
+            "Categories: 'technical_logs', 'memory_shards', 'personal_notes', 'partner_logs'."
+        ),
+        args_schema=VaultInput,
+    ),
 ]
 
 # Map name → StructuredTool for fast lookup
 _TOOL_MAP: dict[str, StructuredTool] = {t.name: t for t in TOOLS}
 
 # ── LLM (lazy init — only created on first Stage 2 call) ─────────────────────
+from config import DEFAULT_MODEL, OLLAMA_BASE_URL
+
 _LLM_WITH_TOOLS = None
 
 def _get_llm():
     global _LLM_WITH_TOOLS
     if _LLM_WITH_TOOLS is None:
         llm = ChatOllama(
-            model="gemma4:31b-cloud",
+            model=DEFAULT_MODEL,
+            base_url=OLLAMA_BASE_URL,
             temperature=0.0,
             num_predict=120,    # enough for tool_call JSON + command string
         )
@@ -656,18 +843,93 @@ _CAN_YOU_RUN_PAT = re.compile(
     re.IGNORECASE
 )
 _MATH_PLOT_PAT = re.compile(
-    r'\b(draw|plot|graph)\s+(?:me\s+)?(?:a\s+)?(.+?)\s*$',
+    r'\b(draw|plot|graph|show)\s+(?:me\s+)?(?:a\s+)?(.+?)\s*$',
     re.IGNORECASE
 )
+_MATH_PRESET_PAT = re.compile(
+    r'\b(heart|butterfly|spiral|lissajous|cardioid|astroid|lemniscate|rose|circle|sine|parabola|hyperbola|ellipse|cycloid|epitrochoid|hypotrochoid|deltoid)\b',
+    re.IGNORECASE
+)
+_MATH_TOOL_PAT = re.compile(
+    r'\b(mathplot|maths?/|math\s+(tool|plot|graph)|parametric|cnc\s+simulat)\b',
+    re.IGNORECASE
+)
+_MATH_EXPR_PAT = re.compile(
+    r'(?:^|[\s,;:])(?:y\s*=|x\s*=|r\s*=|z\s*=)[^=]{2,}',
+    re.IGNORECASE
+)
+
 _EXECUTING_PAT = re.compile(
     r'\bEXECUTING\s+(.+?)(?:\s*$|[,;!?])',
     re.IGNORECASE
 )
 
+_SEARCH_PAT = re.compile(r'\b(search|find|lookup|google|duckduckgo)\b')
+_PDF_PAT    = re.compile(r'\b(pdf|book|paper|textbook|research|thesis)\b')
+
+_MAP_PAT   = re.compile(r'\b(map|location|flood|weather\s*map|environmental\s*map|route|directions|pin|places|attractions|best\s*places)\b')
+_WEATHER_PAT = re.compile(r'\b(weather|temperature|humidity|temp)\b')
 
 def _regex_stage(text: str) -> dict | None:
     """Returns {intent, params, confidence} or None if uncertain."""
     lower = text.lower()
+
+    # PDF Search check
+    if _PDF_PAT.search(lower) and _SEARCH_PAT.search(lower):
+        # Extract topic by removing search keywords
+        topic = _SEARCH_PAT.sub('', lower).replace('pdf', '').replace('book', '').replace('paper', '').strip()
+        if not topic: topic = lower
+        return {"intent": "search_pdfs", "params": {"topic": topic.title()}, "confidence": 1.0}
+
+    # Web Search check (if not map)
+    if _SEARCH_PAT.search(lower) and not _MAP_PAT.search(lower):
+        query = _SEARCH_PAT.sub('', lower).strip()
+        if query:
+            return {"intent": "search_web", "params": {"query": query}, "confidence": 1.0}
+
+    # Best places / Pinning check
+    if re.search(r'\b(best\s*places|tourist\s*spots|attractions|cafes|museums)\b', lower):
+        city = "Dhaka"
+        query = "tourist attraction"
+        m_city = re.search(r'(?:in|for|at)\s+([a-zA-Z\s]+)', lower)
+        if m_city: city = m_city.group(1).strip().title()
+        # Extract query (e.g. "best cafes in Dhaka" -> query="cafes")
+        m_query = re.search(r'\b(cafes|museums|parks|restaurants|hotels)\b', lower)
+        if m_query: query = m_query.group(1)
+        return {"intent": "pin_places", "params": {"city": city, "query": query}, "confidence": 1.0}
+
+    # Weather check (before generic map)
+    if _WEATHER_PAT.search(lower) and not _MAP_PAT.search(lower):
+        city = "Dhaka" # Default
+        m = re.search(r'in\s+([a-zA-Z\s]+)', lower)
+        if m: city = m.group(1).strip().title()
+        return {"intent": "get_weather", "params": {"city": city}, "confidence": 1.0}
+
+    # Map / Route check
+    if _MAP_PAT.search(lower):
+        city = "Dhaka"
+        dest = None
+        m_route = re.search(r'from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+)', lower)
+        if m_route:
+            city = m_route.group(1).strip().title()
+            dest = m_route.group(2).strip().title()
+        else:
+            m_city = re.search(r'(?:in|for|at)\s+([a-zA-Z\s]+)', lower)
+            if m_city: city = m_city.group(1).strip().title()
+        
+        return {"intent": "create_map", "params": {"city": city, "destination": dest}, "confidence": 1.0}
+
+    # Bangla translator check
+    if re.search(r'\b(bangla|bengali)\b', lower):
+        return {"intent": "bangla_translator", "params": {}, "confidence": 1.0}
+
+    # VPA check
+    if re.search(r'\b(vpa|alexa|virtual\s+assistant)\b', lower):
+        command = None
+        # Try to extract command if after "alexa" or "vpa"
+        m = re.search(r'(?:alexa|vpa)\s+(?:to\s+)?(.+)', lower)
+        if m: command = m.group(1).strip()
+        return {"intent": "vpa_assistant", "params": {"command": command}, "confidence": 1.0}
 
     # "use every tool" / "run all tools" → special batch intent
     if _ALL_PAT.search(lower):
@@ -687,11 +949,40 @@ def _regex_stage(text: str) -> dict | None:
                 "params": {"company": company},
                 "confidence": 0.97}
 
-    # ── Math / Equation Plot: "draw heart", "plot butterfly", "graph y = x^2" ──
+    # ── Math / Equation Plot ─────────────────────────────────────────────
+    # Single preset name: "heart", "butterfly", "spiral curve"
+    # Only match if text is short (direct command) OR has drawing-related keywords nearby
+    preset_m = _MATH_PRESET_PAT.search(text)
+    if preset_m and not _STOCK_PAT.search(text) and not _is_crypto_text(text.lower()):
+        is_short = len(text.strip()) < 50
+        has_verb = bool(re.search(r'\b(draw|plot|graph|show|math|cnc)\b', text, re.IGNORECASE))
+        if is_short or has_verb:
+            shape = preset_m.group(1).lower()
+            return {"intent": "math_plot",
+                    "params": {"expression": shape}, "confidence": 0.92}
+
+    # Explicit tool reference: "mathplot", "use maths tool", "maths/mathplot.py"
+    if _MATH_TOOL_PAT.search(text):
+        # Try to extract shape after "mathplot" or "math tool"
+        rest = _MATH_TOOL_PAT.sub('', text).strip()
+        after = rest.split(',')[0].strip().split()[-1] if rest.split() else "heart"
+        # If the extracted word is a preset, use it; otherwise pass the whole expression
+        m2 = _MATH_PRESET_PAT.search(after)
+        shape = m2.group(1).lower() if m2 else after
+        return {"intent": "math_plot",
+                "params": {"expression": shape}, "confidence": 0.94}
+
+    # Math expression: "y = x^2", "x = r*cos(t)", "r = a*theta"
+    if _MATH_EXPR_PAT.search(text):
+        expr = text.strip()
+        return {"intent": "math_plot",
+                "params": {"expression": expr}, "confidence": 0.90}
+
+    # "draw heart", "plot butterfly", "graph y = x^2", "show me a cardioid"
     math_m = _MATH_PLOT_PAT.search(text)
     if math_m:
         expr = math_m.group(2).strip()
-        # Multi-preset: "draw heart, butterfly, and spiral" or "draw heart butterfly spiral"
+        # Multi-preset: "draw heart, butterfly, and spiral"
         if re.search(r',|\band\b', expr) or (
             len(expr.split()) >= 3
             and not any(c in expr for c in "=^+-*/()")
@@ -842,7 +1133,7 @@ def _llm_stage(text: str) -> dict | None:
 # TOOL EXECUTOR — called by marin.py after classify() returns a tool intent
 # ══════════════════════════════════════════════════════════════════════════════
 
-def execute_tool(intent: str, params: dict) -> str | None:
+def execute_tool(intent: str, params: dict, agent_name: str = "marin") -> str | None:
     """
     Run the StructuredTool for the given intent.
     Returns the tool's context string (what it did), or None if not a tool.
@@ -852,12 +1143,18 @@ def execute_tool(intent: str, params: dict) -> str | None:
     if intent not in _TOOL_MAP:
         return None
     try:
-        result = _TOOL_MAP[intent].invoke(params)
+        # Pass agent_name if the tool supports it (like manage_vault)
+        if intent == "manage_vault":
+            from tools.vault_manager import manage_vault
+            result = f"Vault [{agent_name}] {params.get('action')} result: {json.dumps(manage_vault(agent_name, **params), indent=2)}"
+        else:
+            result = _TOOL_MAP[intent].invoke(params)
+            
         # Log tool execution to cmd_log so terminal panel shows it
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         param_str = json.dumps(params)
         _cmd_log.append({
-            "cmd": f"[tool:{intent}] {param_str}",
+            "cmd": f"[{agent_name}][tool:{intent}] {param_str}",
             "allowed": True,
             "output": (result or "(done)")[:500],
             "ts": ts,
@@ -894,7 +1191,7 @@ def _detect_vibe(text: str) -> str:
 
 _KNOWN_TOOLS = set(_TOOL_MAP.keys()) | {"run_all_tools"}
 
-def classify(text: str) -> dict:
+def classify(text: str, agent_name: str = "marin") -> dict:
     """
     Two-stage classification.
     Returns: {intent, params, user_vibe, confidence, _tool_ack}
@@ -921,7 +1218,7 @@ def classify(text: str) -> dict:
     result["user_vibe"] = _detect_vibe(text)
     result["_tool_ack"] = None
 
-    print(f"[marin_fier] intent={result['intent']}  "
+    print(f"[{agent_name}][marin_fier] intent={result['intent']}  "
           f"params={result['params']}  "
           f"vibe={result['user_vibe']}  "
           f"conf={result['confidence']:.2f}")

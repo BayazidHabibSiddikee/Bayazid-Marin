@@ -9,14 +9,18 @@ from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from typing import List, Dict, Any, Optional
 
-import threading
+import ollama
+import httpx
 
+from config import DEFAULT_MODEL, FAST_MODEL, VISION_MODEL, OLLAMA_BASE_URL
+from database import init_db, migrate_from_json
+import database
 from bayazid import (
     main as bayazid_main,
     teach_topic, generate_quiz, create_study_plan,
-    review_code, explain_error,
-    handle_timer_command, format_study_context,
+    review_code, explain_error, handle_timer_command,
     timer, memory
 )
 from marin import main as marin_main, format_game_context_for_marin
@@ -25,7 +29,8 @@ from arena import (
     _stream_debate, _stream_judge,
     _load_arena_history, _load_bayazid_history, _format_history_for_context,
 )
-from classifier import classify, extract_timer_task, extract_topic, extract_quiz_params
+from classifier import extract_timer_task, extract_topic, extract_quiz_params
+from marin_fier import classify # Use unified classifier
 from config import UPLOAD_FOLDER, HOST, PORT
 
 app = FastAPI(title="Bayazid HS-02")
@@ -37,6 +42,103 @@ os.makedirs("static/generated", exist_ok=True)
 
 ACTIVE_AGENT = "bayazid"
 
+# ── KNOWLEDGE HUB API ────────────────────────────────────────────────────────
+
+@app.get("/knowledge-hub", response_class=HTMLResponse)
+async def knowledge_hub_page(request: Request):
+    return templates.TemplateResponse(request=request, name="knowledge_hub.html")
+
+@app.post("/api/knowledge-hub/update")
+async def knowledge_hub_update(request: Request):
+    from tools.knowledge_hub import create_integrated_hub_map
+    data = await request.json()
+    location = data.get("location", "Dhaka")
+    destination = data.get("destination")
+    query = data.get("query", "tourist attraction")
+    
+    # The tool now handles searching pins internally via the 'query' parameter
+    result = create_integrated_hub_map(location, destination, query=query)
+    return JSONResponse(result)
+
+@app.get("/research-hub", response_class=HTMLResponse)
+async def research_hub_page(request: Request):
+    return templates.TemplateResponse(request=request, name="research_hub.html")
+
+@app.post("/api/research/search")
+async def research_search_api(request: Request):
+    from tools.knowledge_hub import search_pdfs
+    data = await request.json()
+    query = data.get("query")
+    results = search_pdfs(query)
+    return JSONResponse({"results": results})
+
+@app.get("/api/market/quotes")
+async def market_quotes_api(symbols: str = "AAPL,TSLA,META"):
+    symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    out = []
+    try:
+        import yfinance as yf
+        # yfinance can be slow or fail, use a try-block
+        tickers = yf.Tickers(" ".join(symbols_list))
+        for sym in symbols_list:
+            try:
+                # Some tickers might not exist in the object if they failed
+                t = tickers.tickers[sym]
+                info = t.info
+                price = info.get("regularMarketPrice") or info.get("currentPrice")
+                prev = info.get("regularMarketPreviousClose") or price
+                chg = round(((price - prev) / prev) * 100, 2) if prev and price else 0.0
+                out.append({"symbol": sym, "price": price or 0, "change_pct": chg})
+            except Exception:
+                out.append({"symbol": sym, "price": 0, "change_pct": 0.0})
+    except Exception as e:
+        print(f"[MarketAPI] Error: {e}")
+        out = [{"symbol": s, "price": 0, "change_pct": 0.0} for s in symbols_list]
+    return JSONResponse(out)
+
+@app.post("/api/tools/open")
+async def tools_open_api(request: Request):
+    data = await request.json()
+    tool = data.get("tool", "")
+    params = data.get("params", {})
+    
+    import subprocess
+    base = os.path.dirname(os.path.abspath(__file__))
+    
+    if tool == "get_stock_info":
+        company = params.get("company", "AAPL")
+        script = os.path.join(base, "tools", "stock.py")
+        flag = "--ticker" if (len(company) <= 5 and company.isupper()) else "--company"
+        subprocess.Popen([sys.executable, script, flag, company], start_new_session=True)
+    elif tool == "get_crypto_price":
+        coin = params.get("coin", "bitcoin")
+        script = os.path.join(base, "tools", "crypto.py")
+        subprocess.Popen([sys.executable, script, "--coin", coin], start_new_session=True)
+        
+    return JSONResponse({"status": "launched", "tool": tool})
+
+# ── VAULT API ─────────────────────────────────────────────────────────────
+
+@app.get("/vault", response_class=HTMLResponse)
+async def vault_explorer_page(request: Request):
+    return templates.TemplateResponse(request=request, name="vault_explorer.html")
+
+@app.get("/api/vault/list/{agent}")
+async def vault_list_api(agent: str):
+    from tools.vault_manager import manage_vault
+    return JSONResponse(manage_vault(agent, "list"))
+
+@app.post("/api/vault/read")
+async def vault_read_api(request: Request):
+    from tools.vault_manager import manage_vault
+    data = await request.json()
+    return JSONResponse(manage_vault(data["agent"], "read", data["filename"], category=data["category"]))
+
+@app.post("/api/vault/delete")
+async def vault_delete_api(request: Request):
+    from tools.vault_manager import manage_vault
+    data = await request.json()
+    return JSONResponse(manage_vault(data["agent"], "delete", data["filename"], category=data["category"]))
 
 # ── PAGE ROUTES ───────────────────────────────────────────────────────────
 
@@ -45,9 +147,10 @@ async def get_index(request: Request):
     return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/chat", response_class=HTMLResponse)
-async def get_chat(request: Request, agent: str = "bayazid"):
+async def chat_page(request: Request, agent: str = "bayazid"):
     global ACTIVE_AGENT
     ACTIVE_AGENT = agent
+    # SIGNATURE FIX: Use request=request keyword to avoid interpretation as context
     return templates.TemplateResponse(request=request, name="bayazid_chat.html", context={"agent": agent})
 
 @app.get("/profile", response_class=HTMLResponse)
@@ -74,8 +177,13 @@ async def upload_image(image: UploadFile = File(...)):
 async def handle_message(
     message: str = Form(...),
     image: UploadFile = File(None),
-    study_context: str = Form(None)
+    study_context: str = Form(None),
+    agent: str = Form(None)
 ):
+    global ACTIVE_AGENT
+    target_agent = agent or ACTIVE_AGENT
+    print(f"[Message] Agent: {target_agent} | Msg: {message[:50]}...")
+
     image_path = None
     if image and image.filename:
         filename = re.sub(r'[^a-zA-Z0-9_.-]', '_', image.filename)
@@ -84,29 +192,32 @@ async def handle_message(
             buf.write(await image.read())
         image_path = os.path.abspath(image_path)
 
-    if ACTIVE_AGENT == "marin":
+    if target_agent == "marin":
+        print(f"[Routing] -> Marin Engine")
         from games.tiktaktoe import get_game
         game = get_game()
         state = game.get_board_state() if game else None
         game_context = format_game_context_for_marin(state) if state else None
-        # Inject timer info into the message so Marin knows about active sessions
+        
+        # Inject timer info into the message
+        from bayazid import timer
         timer_status = timer.get_session_status()
         msg_with_timer = message
         if timer_status["active"]:
             msg_with_timer = f"[Focus: {timer_status['task']} ({timer_status['elapsed_formatted']})]\n{message}"
+        
         return StreamingResponse(
             marin_main(msg_with_timer, image_path=image_path, game_context=game_context),
             media_type="text/plain"
         )
 
-    import marin
-    use_rag = marin.RAG_ENABLED
-
-    clf = classify(message)
+    # For Bayazid, check intents for specialized modes
+    print(f"[Routing] -> Bayazid Engine (Classifying...)")
+    clf = classify(message, agent_name="bayazid")
     intent = clf["intent"]
     sub = clf.get("sub_intent")
+    print(f"[Intent] Detected: {intent}")
 
-    # Route by intent
     if intent == "timer":
         task = extract_timer_task(message)
         result = await handle_timer_command(sub or "status", task)
@@ -128,17 +239,18 @@ async def handle_message(
         code = code_match.group(1) if code_match else message
         return StreamingResponse(review_code(code), media_type="text/plain")
 
-    elif intent == "debug":
-        error_match = re.search(r'```[\w]*\n?([\s\S]+?)```', message)
-        error_text = error_match.group(1) if error_match else message
-        return StreamingResponse(explain_error(error_text), media_type="text/plain")
+    elif intent == "error_help":
+        return StreamingResponse(explain_error(message), media_type="text/plain")
 
-    else:
-        ctx = format_study_context(json.loads(study_context)) if study_context else None
-        return StreamingResponse(
-            bayazid_main(message, image_path=image_path, study_context=ctx, use_rag=use_rag),
-            media_type="text/plain"
-        )
+    # Default: Deep technical chat
+    print(f"[Routing] -> Bayazid Default Technical Chat")
+    import marin
+    use_rag = marin.RAG_ENABLED
+    ctx = study_context or ""
+    return StreamingResponse(
+        bayazid_main(message, image_path=image_path, study_context=ctx, use_rag=use_rag),
+        media_type="text/plain"
+    )
 
 
 # ── QUIZ ENDPOINTS ──────────────────────────────────────────────────────
@@ -156,7 +268,6 @@ def _parse_quiz_to_json(raw: str, topic: str, difficulty: str) -> dict:
         answer_letter = ""
         explanation = ""
 
-        # Try normal multi-line options first
         for line in lines[1:]:
             line = line.strip()
             opt_match = re.match(r'^([A-D])[\)\.]\s*(.*)', line)
@@ -176,7 +287,6 @@ def _parse_quiz_to_json(raw: str, topic: str, difficulty: str) -> dict:
                     explanation = rest[1:].strip()
                 continue
 
-        # Fallback: inline single-line options like "A) foo  B) bar  C) baz  D) qux"
         if not options and len(lines) > 1:
             inline = " ".join(lines[1:])
             opts = re.findall(r'([A-D])[\)\.]\s*([^\n]*?)(?=\s*[A-D][\)\.]|\*\*Answer|\Z)', inline, re.DOTALL)
@@ -224,59 +334,74 @@ async def generate_quiz_json_endpoint(
     difficulty: str = Form("medium"),
     num_questions: int = Form(5)
 ):
-    """Collect full quiz text from LLM, parse to JSON, return interactive MCQ data."""
-    chunks = []
+    full_text = ""
     async for chunk in generate_quiz(topic, difficulty, num_questions):
-        chunks.append(chunk)
-    raw = "".join(chunks)
-    data = _parse_quiz_to_json(raw, topic, difficulty)
-    if not data["questions"]:
-        data["error"] = "Could not parse quiz. Raw output shown below."
-        data["raw"] = raw
-    return JSONResponse(data)
+        full_text += chunk
+    
+    try:
+        data = _parse_quiz_to_json(full_text, topic, difficulty)
+        data["raw"] = full_text
+        return JSONResponse(data)
+    except Exception as e:
+        return JSONResponse({"error": str(e), "raw": full_text})
 
 
-# ── TIMER API ─────────────────────────────────────────────────────────────
+# ── ARENA ENDPOINTS ─────────────────────────────────────────────────────
 
-@app.post("/timer/{command}")
-async def timer_command(command: str, task: str = Form("")):
-    result = await handle_timer_command(command, task)
-    return JSONResponse({"message": result, "stats": timer.get_stats()})
+@app.get("/arena", response_class=HTMLResponse)
+async def arena_page(request: Request):
+    return templates.TemplateResponse(request=request, name="arena_chat.html")
 
-@app.get("/timer/stats")
-async def get_timer_stats():
-    return JSONResponse(timer.get_stats())
+@app.post("/arena/debate")
+async def arena_debate(topic: str = Form(...)):
+    async def debate_stream():
+        history = []
+        async for chunk in _stream_debate(topic, history):
+            yield chunk
+    return StreamingResponse(debate_stream(), media_type="text/plain")
 
-
-# ── MEMORY MANAGEMENT ─────────────────────────────────────────────────────
-
-@app.post("/memory/clear")
-async def clear_memory():
-    if ACTIVE_AGENT == "marin":
-        return JSONResponse({"ok": True, "message": "Marin memory cannot be cleared via this endpoint."})
-    memory.clear()
-    return JSONResponse({"ok": True, "message": "Memory cleared."})
+@app.post("/arena/judge")
+async def arena_judge(topic: str = Form(...), debate_history: str = Form(...)):
+    history = json.loads(debate_history)
+    return StreamingResponse(_stream_judge(topic, history), media_type="text/plain")
 
 
-# ── AGENT SWITCHING ──────────────────────────────────────────────────────────
+# ── SETTINGS & UTILS ─────────────────────────────────────────────────────
 
 @app.post("/agent/switch")
 async def switch_agent(agent: str = Form(...)):
     global ACTIVE_AGENT
     ACTIVE_AGENT = agent
-    return {"ok": True, "agent": agent}
+    return {"ok": True, "agent": ACTIVE_AGENT}
 
-
-# ── AUDIO STOP (interrupt TTS speech) ─────────────────────────────────────────
-
-@app.post("/audio/stop")
-async def audio_stop():
+@app.get("/settings/voice")
+async def get_voice_setting():
     import marin
-    killed = marin.stop_audio()
-    return {"ok": True, "killed": killed}
+    return {"voice_enabled": marin.VOICE_ENABLED}
 
+@app.post("/settings/voice")
+async def set_voice_setting(enabled: str = Form(...)):
+    import marin
+    marin.VOICE_ENABLED = (enabled == "1")
+    return {"ok": True, "voice_enabled": marin.VOICE_ENABLED}
 
-# ── SETTINGS (shared by Marin) ───────────────────────────────────────────────
+@app.get("/settings/rag")
+async def get_rag_setting():
+    import marin
+    from utils.agent_logic import RAG_URL
+    running = False
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{RAG_URL}/health", timeout=1.0)
+            if r.status_code == 200: running = True
+    except: pass
+    return {"rag_enabled": marin.RAG_ENABLED, "rag_running": running}
+
+@app.post("/settings/rag")
+async def set_rag_setting(enabled: str = Form(...)):
+    import marin
+    marin.RAG_ENABLED = (enabled == "1")
+    return {"ok": True, "rag_enabled": marin.RAG_ENABLED}
 
 @app.get("/settings/wordlimit")
 async def get_wordlimit():
@@ -286,229 +411,48 @@ async def get_wordlimit():
 @app.post("/settings/wordlimit")
 async def set_wordlimit(limit: int = Form(...)):
     import marin
-    marin.WORD_LIMIT = max(0, limit)
-    return {"word_limit": marin.WORD_LIMIT}
+    marin.WORD_LIMIT = limit
+    return {"ok": True, "word_limit": marin.WORD_LIMIT}
 
-@app.get("/settings/voice")
-async def get_voice():
-    import marin
-    return {"voice_enabled": marin.VOICE_ENABLED}
-
-@app.post("/settings/voice")
-async def set_voice(enabled: str = Form(...)):
-    import marin
-    marin.VOICE_ENABLED = enabled in ("1", "true", "True", "yes")
-    return {"voice_enabled": marin.VOICE_ENABLED}
-
-@app.get("/settings/maxtokens")
-async def get_maxtokens():
-    import marin
-    return {"max_tokens": marin.MAX_TOKENS}
-
-@app.post("/settings/maxtokens")
-async def set_maxtokens(tokens: int = Form(...)):
-    import marin
-    marin.MAX_TOKENS = max(0, min(tokens, 4096))
-    return {"max_tokens": marin.MAX_TOKENS}
-
-@app.get("/settings/rag")
-async def get_rag():
-    import marin
-    alive = _rag_server_alive()
-    return {"rag_enabled": marin.RAG_ENABLED, "rag_running": alive}
-
-@app.post("/settings/rag")
-async def set_rag(enabled: str = Form(...)):
-    import marin
-    on = enabled in ("1", "true", "True", "yes")
-    marin.RAG_ENABLED = on
-    if on:
-        await asyncio.to_thread(_start_rag_server)
-    else:
-        await asyncio.to_thread(_stop_rag_server)
-    alive = _rag_server_alive()
-    return {"rag_enabled": marin.RAG_ENABLED, "rag_running": alive}
-
-
-# ── RAG SERVER PROCESS MANAGEMENT ──────────────────────────────────────────────
-
-_rag_process = None
-_rag_lock = threading.Lock()
-_RAG_BASE = "http://127.0.0.1:5080"
-
-
-def _rag_server_alive() -> bool:
-    try:
-        import httpx
-        r = httpx.get(f"{_RAG_BASE}/health", timeout=2.0)
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
-def _start_rag_server():
-    global _rag_process
-    if _rag_server_alive():
-        return
-    with _rag_lock:
-        if _rag_server_alive():
-            return
-        if _rag_process is not None and _rag_process.poll() is None:
-            return
-        try:
-            base = os.path.dirname(os.path.abspath(__file__))
-            script = os.path.join(base, "rag_server.py")
-            _rag_process = subprocess.Popen(
-                [sys.executable, script, "--port", "5080", "--max-memory-mb", "800"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            import time
-            for _ in range(30):
-                if _rag_server_alive():
-                    print("[RAG] Server started")
-                    return
-                time.sleep(0.5)
-            print("[RAG] Server launched (may take longer to index)")
-        except Exception as e:
-            print(f"[RAG] Start failed: {e}")
-            _rag_process = None
-
-
-def _stop_rag_server():
-    global _rag_process
-    # Kill tracked process
-    if _rag_process is not None:
-        try:
-            pgid = os.getpgid(_rag_process.pid)
-            os.killpg(pgid, signal.SIGTERM)
-            import time
-            time.sleep(0.5)
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            _rag_process = None
-            print("[RAG] Server stopped")
-        except ProcessLookupError:
-            _rag_process = None
-        except Exception as e:
-            print(f"[RAG] Stop error: {e}")
-    # Also pkill any orphaned rag_server instances
-    try:
-        subprocess.run(["pkill", "-f", "rag_server.py"],
-                       capture_output=True, timeout=3)
-    except Exception:
-        pass
-
-
-import atexit
-atexit.register(_stop_rag_server)
-
-
-# ── ARENA DEBATE ROUTES ─────────────────────────────────────────────────────────
-
-@app.get("/arena", response_class=HTMLResponse)
-async def get_arena(request: Request):
-    return templates.TemplateResponse(request=request, name="arena_chat.html")
-
-
-@app.post("/arena/stream")
-async def arena_stream(request: Request):
-    body        = await request.json()
-    character   = body.get("character", "marin")
-    topic       = body.get("topic", "")
-    context     = body.get("context", "")
-    marin_arg   = body.get("marin_arg", "")
-    bayazid_arg = body.get("bayazid_arg", "")
-
-    marin_hist_ctx   = ""
-    bayazid_hist_ctx = ""
-
-    if character in ("marin", "judge"):
-        marin_hist  = await asyncio.to_thread(_load_arena_history, 20)
-        marin_hist_ctx = _format_history_for_context(marin_hist, "Marin")
-
-    if character in ("bayazid", "judge"):
-        bayazid_hist    = await asyncio.to_thread(_load_bayazid_history, 20)
-        bayazid_hist_ctx = _format_history_for_context(bayazid_hist, "Bayazid")
-
-    marin_system   = build_marin_arena_prompt(marin_hist_ctx)
-    bayazid_system = build_bayazid_arena_prompt(bayazid_hist_ctx)
-
-    queue = asyncio.Queue()
-    loop  = asyncio.get_event_loop()
-
-    def run_in_thread():
-        try:
-            if character == "marin":
-                gen = _stream_debate(marin_system, f'Argue your perspective on this topic: "{topic}"', context)
-            elif character == "bayazid":
-                gen = _stream_debate(bayazid_system, f'Argue your perspective on this topic: "{topic}"', context)
-            elif character == "judge":
-                gen = _stream_judge(topic, marin_arg, bayazid_arg)
-            else:
-                loop.call_soon_threadsafe(queue.put_nowait, "[ERROR] Unknown character")
-                loop.call_soon_threadsafe(queue.put_nowait, None)
-                return
-            for chunk in gen:
-                loop.call_soon_threadsafe(queue.put_nowait, chunk)
-        except Exception as e:
-            loop.call_soon_threadsafe(queue.put_nowait, f"[ERROR] {str(e)}")
-        finally:
-            loop.call_soon_threadsafe(queue.put_nowait, None)
-
-    threading.Thread(target=run_in_thread, daemon=True).start()
-
-    async def generate():
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                break
-            yield chunk
-
-    return StreamingResponse(generate(), media_type="text/plain")
-
-
-@app.post("/arena/stream/live")
-async def arena_stream_live(request: Request):
-    return await arena_stream(request)
-
-
-@app.get("/arena/history")
-async def arena_history(limit: int = 10):
-    marin_hist   = await asyncio.to_thread(_load_arena_history,   limit)
-    bayazid_hist = await asyncio.to_thread(_load_bayazid_history, limit)
-    return {"marin": marin_hist, "bayazid": bayazid_hist}
-
-
-# ── COMMAND LOG (Marin tool execution log) ────────────────────────────────────
+@app.post("/audio/stop")
+async def stop_audio_endpoint():
+    from marin import stop_audio
+    stopped = stop_audio()
+    return {"ok": True, "stopped": stopped}
 
 @app.get("/cmd/log/json")
-async def cmd_log_json(limit: int = 100):
-    try:
-        from marin_fier import _cmd_log
-        logs = list(reversed(_cmd_log))
-        if limit > 0:
-            logs = logs[:limit]
-        return {"logs": logs}
-    except ImportError:
-        return {"logs": []}
+async def get_cmd_log(limit: int = 10):
+    from marin_fier import _cmd_log
+    logs = _cmd_log[-limit:] if _cmd_log else []
+    return {"logs": logs}
 
+@app.post("/timer/command")
+async def timer_cmd(command: str = Form(...), task: str = Form("")):
+    result = await handle_timer_command(command, task)
+    return JSONResponse({"message": result, "stats": timer.get_stats()})
 
-# ── MEMORY (agent-aware) ──────────────────────────────────────────────────────
+@app.get("/timer/stats")
+async def get_timer_stats():
+    return JSONResponse(timer.get_stats())
 
 @app.get("/memory/status")
-async def memory_status():
-    if ACTIVE_AGENT == "marin":
+async def memory_status(agent: str = None):
+    target_agent = agent or ACTIVE_AGENT
+    if target_agent == "marin":
         from marin import load_history
         messages = load_history(limit=60)
     else:
         messages = memory.get()
-    return {"messages": messages}
+    return JSONResponse({"messages": messages})
 
-
-# ── HEALTH ────────────────────────────────────────────────────────────────
+@app.post("/memory/clear")
+async def memory_clear_endpoint(agent: str = Form(None)):
+    target_agent = agent or ACTIVE_AGENT
+    if target_agent == "marin":
+        database.clear_history("marin")
+    else:
+        memory.clear()
+    return {"ok": True}
 
 @app.get("/health")
 async def health():
@@ -517,4 +461,6 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
+    init_db()
+    migrate_from_json()
     uvicorn.run(app, host=HOST, port=PORT)

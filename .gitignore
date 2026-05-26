@@ -1,5 +1,10 @@
 # Data & State Files
-*.json
+storage/
+marin_history.json
+bayazid_history.json
+arena_history.json
+timer_sessions.json
+vibe_state.json
 
 # Document & Knowledge Base
 doc/

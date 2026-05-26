@@ -24,10 +24,7 @@ import ollama
 from bayazid import BASE_CHARACTER as BAYAZID_CHARACTER, MODEL
 from marin   import BASE_CHARACTER as MARIN_BASE_CHARACTER, get_character_prompt
 
-# ── History file paths ────────────────────────────────────────────────────────
-BASE_DIR          = os.path.dirname(os.path.abspath(__file__))
-ARENA_HISTORY_FILE   = os.path.join(BASE_DIR, "arena_history.json")
-BAYAZID_HISTORY_FILE = os.path.join(BASE_DIR, "bayazid_history.json")
+import database
 
 # Arena uses the base model directly — same model, clean slate per debate
 ARENA_MODEL = MODEL  # "gemma4:31b-cloud"
@@ -41,25 +38,19 @@ templates = Jinja2Templates(directory="templates")
 # HISTORY HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _load_json_history(path: str, limit: int = 20) -> list:
-    """Load last N messages from a JSON history file."""
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            history = json.load(f)
-        return history[-limit:]
-    except Exception:
-        return []
-
-
 def _load_arena_history(limit: int = 20) -> list:
-    """Load arena's own history (not marin's personal chat)."""
-    return _load_json_history(ARENA_HISTORY_FILE, limit)
+    """Load arena's own history."""
+    return database.get_history("arena", limit=limit)
 
 
 def _load_bayazid_history(limit: int = 20) -> list:
-    return _load_json_history(BAYAZID_HISTORY_FILE, limit)
+    """Load bayazid's personal history."""
+    return database.get_history("bayazid", limit=limit)
+
+
+def _save_arena_message(role: str, content: str):
+    """Save a message to arena history."""
+    database.save_message("arena", role, content)
 
 
 def _format_history_for_context(history: list, name: str) -> str:

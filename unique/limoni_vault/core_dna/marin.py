@@ -36,12 +36,16 @@ try:
 except ImportError:
     leo = None
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-MODEL     = "gemma4:31b-cloud"
+# ── Project Root Setup ────────────────────────────────────────────────────────
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-VIBE_FILE = os.path.join(BASE_DIR, "vibe_state.json")
+ROOT_DIR  = os.path.abspath(os.path.join(BASE_DIR, "..", "..", ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
+
+import database
+from config import DEFAULT_MODEL as MODEL
+
+VIBE_FILE = os.path.join(ROOT_DIR, "storage", "vibe_state.json")
 IMAGE_DIR = os.path.join(os.getcwd(), "static", "uploads")
 GEN_DIR   = os.path.join(os.getcwd(), "static", "generated")
 VOICE_PATH = os.path.expanduser("~/.piper-voices/en_US-amy-medium.onnx")
@@ -152,7 +156,7 @@ except Exception as e:
 # ═══════════════════════════════════════════════════════════════════════════════
 # HISTORY  — MongoDB preferred, JSON fallback
 # ═══════════════════════════════════════════════════════════════════════════════
-HISTORY_FILE = os.path.join(BASE_DIR, "marin_history.json")
+HISTORY_FILE = os.path.join(BASE_DIR, "..", "..", "..", "storage", "marin_history.json")
 
 try:
     from pymongo import MongoClient
@@ -168,43 +172,14 @@ except Exception as e:
 
 
 def load_history(limit: int = 40) -> list:
-    """Load last N message pairs from MongoDB or JSON file."""
-    if MONGO_OK:
-        docs = list(_history_col.find(
-            {}, {"_id": 0, "role": 1, "content": 1}
-        ).sort("_id", -1).limit(limit))
-        return list(reversed(docs))
-    else:
-        if os.path.exists(HISTORY_FILE):
-            try:
-                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                    history = json.load(f)
-                return history[-limit:]
-            except Exception:
-                pass
-        return []
+    """Load last N messages from SQLite."""
+    return database.get_history("marin", limit=limit)
 
 
 def save_to_history(user_msg: str, marin_reply: str):
-    """Save one exchange to MongoDB or JSON file."""
-    if MONGO_OK:
-        now = datetime.utcnow()
-        _history_col.insert_many([
-            {"role": "user",      "content": user_msg,    "ts": now},
-            {"role": "assistant", "content": marin_reply, "ts": now},
-        ])
-        total = _history_col.count_documents({})
-        if total > 400:
-            oldest = list(_history_col.find().sort("_id", 1).limit(total - 400))
-            if oldest:
-                _history_col.delete_many({"_id": {"$lte": oldest[-1]["_id"]}})
-    else:
-        history = load_history(limit=500)
-        history.append({"role": "user",      "content": user_msg})
-        history.append({"role": "assistant", "content": marin_reply})
-        history = history[-80:]
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=4)
+    """Save one exchange to SQLite."""
+    database.save_message("marin", "user", user_msg)
+    database.save_message("marin", "assistant", marin_reply)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -232,22 +207,17 @@ def get_rag_context(query: str) -> str:
 # VIBE SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════════
 def load_vibe() -> dict:
-    if os.path.exists(VIBE_FILE):
-        try:
-            with open(VIBE_FILE, "r") as f:
-                data = json.load(f)
-                return {
-                    "user_vibe":  data.get("user_vibe",  "neutral"),
-                    "marin_vibe": data.get("marin_vibe", "lovely"),
-                }
-        except Exception:
-            pass
+    vibe = database.get_state("vibe")
+    if vibe:
+        return {
+            "user_vibe":  vibe.get("user_vibe",  "neutral"),
+            "marin_vibe": vibe.get("marin_vibe", "lovely"),
+        }
     return {"user_vibe": "neutral", "marin_vibe": "lovely"}
 
 
 def save_vibe(user_vibe: str, marin_vibe: str):
-    with open(VIBE_FILE, "w") as f:
-        json.dump({"user_vibe": user_vibe, "marin_vibe": marin_vibe}, f)
+    database.set_state("vibe", {"user_vibe": user_vibe, "marin_vibe": marin_vibe})
 
 
 def analyze_marin_vibe(reply: str) -> str:
